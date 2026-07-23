@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Attendance Hub - ZKTeco Management System</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- CSS Style -->
+    <link rel="stylesheet" href="/css/style.css">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo-glow"></div>
+                <div class="logo-text">
+                    <span class="logo-title">Attendance</span>
+                    <span class="logo-subtitle">Hub PRO</span>
+                </div>
+            </div>
+            
+            <nav class="sidebar-nav">
+                <button class="nav-item active" data-tab="dashboard">
+                    <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+                    <span>Dashboard</span>
+                </button>
+                <button class="nav-item" data-tab="attendance">
+                    <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                    <span>Attendance Log</span>
+                </button>
+                <button class="nav-item" data-tab="employees">
+                    <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+                    <span>Employees</span>
+                </button>
+                <button class="nav-item" data-tab="departments">
+                    <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
+                    <span>Departments</span>
+                </button>
+                <button class="nav-item" data-tab="leaves">
+                    <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+                    <span>Leave Management</span>
+                </button>
+                <button class="nav-item" data-tab="settings">
+                    <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                    <span>Settings</span>
+                </button>
+            </nav>
+            
+            <!-- Connection Card -->
+            <div class="connection-status-card">
+                <div class="pulse-indicator status-offline" id="connection-dot"></div>
+                <div class="connection-info">
+                    <span class="conn-title" id="connection-title">Offline</span>
+                    <span class="conn-ip" id="connection-ip">192.168.1.201:4370</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Workspace Area -->
+        <main class="main-content">
+            <!-- Header bar -->
+            <header class="main-header">
+                <div class="header-left">
+                    <h1 class="page-title" id="active-tab-title">Dashboard</h1>
+                    <p class="page-subtitle" id="active-tab-subtitle">Real-time attendance analysis and activity metrics.</p>
+                </div>
+                
+                <!-- Sync Control Hub -->
+                <div class="sync-panel">
+                    <div class="sync-metrics">
+                        <div class="sync-row">
+                            <span class="sync-label">Next Auto Sync:</span>
+                            <span class="sync-value text-glow-blue" id="sync-countdown">05:00</span>
+                        </div>
+                        <div class="sync-row">
+                            <span class="sync-label">Last Sync:</span>
+                            <span class="sync-value" id="sync-last-time">Never</span>
+                        </div>
+                    </div>
+                    <button class="btn btn-primary" id="btn-sync">
+                        <svg class="icon-spin" id="sync-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path></svg>
+                        <span id="sync-btn-text">Sync Now</span>
+                    </button>
+                </div>
+            </header>
+
+            <div class="content-body">
+                <!-- ================= TAB: DASHBOARD ================= -->
+                <section class="tab-pane active" id="tab-dashboard">
+                    <!-- Metric Cards -->
+                    <div class="metrics-grid">
+                        <div class="card metric-card border-glow-green">
+                            <div class="metric-icon bg-green">
+                                <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2" fill="none"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+                            </div>
+                            <div class="metric-data">
+                                <span class="metric-value" id="stat-present">0</span>
+                                <span class="metric-label">Present Today</span>
+                            </div>
+                        </div>
+                        
+                        <div class="card metric-card border-glow-orange">
+                            <div class="metric-icon bg-orange">
+                                <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2" fill="none"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                            </div>
+                            <div class="metric-data">
+                                <span class="metric-value" id="stat-late">0</span>
+                                <span class="metric-label">Late Today</span>
+                            </div>
+                        </div>
+
+                        <div class="card metric-card border-glow-red">
+                            <div class="metric-icon bg-red">
+                                <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2" fill="none"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="9" x2="15" y2="15"></line><line x1="15" y1="9" x2="9" y2="15"></line></svg>
+                            </div>
+                            <div class="metric-data">
+                                <span class="metric-value" id="stat-absent">0</span>
+                                <span class="metric-label">Absent Today</span>
+                            </div>
+                        </div>
+
+                        <div class="card metric-card border-glow-blue">
+                            <div class="metric-icon bg-blue">
+                                <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2" fill="none"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>
+                            </div>
+                            <div class="metric-data">
+                                <span class="metric-value" id="stat-hours">0h</span>
+                                <span class="metric-label">Avg Work Hours</span>
+                            </div>
+                        </div>
+
+                        <div class="card metric-card border-glow-purple">
+                            <div class="metric-icon bg-purple">
+                                <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2" fill="none"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+                            </div>
+                            <div class="metric-data">
+                                <span class="metric-value" id="stat-on-leave">0</span>
+                                <span class="metric-label">On Leave Today</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Charts and Feed Grid -->
+                    <div class="dashboard-grid">
+                        <!-- Chart Card -->
+                        <div class="card glass-card span-2">
+                            <div class="card-header">
+                                <h3 class="card-title">Attendance Trends</h3>
+                                <p class="card-subtitle">Last 7 operational workdays summary</p>
+                            </div>
+                            <div class="card-body chart-wrapper">
+                                <canvas id="trendChart"></canvas>
+                            </div>
+                        </div>
+
+                        <!-- Live Feed Card -->
+                        <div class="card glass-card">
+                            <div class="card-header">
+                                <div class="badge badge-pulse bg-red">LIVE FEED</div>
+                                <h3 class="card-title">Recent Device Logs</h3>
+                                <p class="card-subtitle">Latest raw employee fingerprint events</p>
+                            </div>
+                            <div class="card-body">
+                                <div class="feed-container" id="recent-punches-list">
+                                    <!-- Log rows dynamically injected -->
+                                    <div class="empty-state">
+                                        <p>No punch logs registered yet.</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ================= TAB: ATTENDANCE LOG ================= -->
+                <section class="tab-pane" id="tab-attendance">
+                    <div class="card glass-card">
+                        <!-- Filters Header -->
+                        <div class="filter-bar">
+                            <div class="filter-group">
+                                <label for="filter-start-date">Start Date</label>
+                                <input type="date" id="filter-start-date" class="form-control">
+                            </div>
+                            <div class="filter-group">
+                                <label for="filter-end-date">End Date</label>
+                                <input type="date" id="filter-end-date" class="form-control">
+                            </div>
+                            <div class="filter-group">
+                                <label for="filter-status">Status</label>
+                                <select id="filter-status" class="form-control">
+                                    <option value="">All Statuses</option>
+                                    <option value="Present">Present</option>
+                                    <option value="Late">Late</option>
+                                    <option value="Absent">Absent</option>
+                                    <option value="Left Early">Left Early</option>
+                                    <option value="On Leave">On Leave</option>
+                                    <option value="Half Day">Half Day</option>
+                                </select>
+                            </div>
+                            <div class="filter-group">
+                                <label for="filter-department">Department</label>
+                                <select id="filter-department" class="form-control">
+                                    <option value="">All Departments</option>
+                                </select>
+                            </div>
+                            <div class="filter-group filter-search">
+                                <label for="filter-search-input">Search Employee</label>
+                                <input type="text" id="filter-search-input" placeholder="Name or ID..." class="form-control">
+                            </div>
+                            <div class="filter-actions">
+                                <button class="btn btn-secondary btn-full" id="btn-clear-filters">Clear</button>
+                                <button class="btn btn-primary btn-full" id="btn-apply-filters">Apply Filters</button>
+                                <button class="btn btn-success btn-full" id="btn-export-excel">Export Excel</button>
+                            </div>
+                        </div>
+                        
+                        <!-- Table -->
+                        <div class="table-container">
+                            <table class="data-table" id="attendance-table">
+                                <thead>
+                                    <tr>
+                                        <th>Date</th>
+                                        <th>Employee</th>
+                                        <th>Department</th>
+                                        <th>Device ID</th>
+                                        <th>Check In</th>
+                                        <th>Check Out</th>
+                                        <th>Work Hours</th>
+                                        <th>Status</th>
+                                        <th>Late Mins</th>
+                                        <th>Early Leave</th>
+                                        <th>Remarks</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="attendance-table-body">
+                                    <!-- Injected dynamically -->
+                                    <tr>
+                                        <td colspan="11" class="text-center">Loading logs...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ================= TAB: EMPLOYEES ================= -->
+                <section class="tab-pane" id="tab-employees">
+                    <div class="employees-grid" id="employees-list">
+                        <!-- Employee cards dynamically injected -->
+                        <div class="empty-state">
+                            <p>Loading employee directory...</p>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ================= TAB: DEPARTMENTS ================= -->
+                <section class="tab-pane" id="tab-departments">
+                    <div class="settings-grid">
+                        <div class="card glass-card">
+                            <div class="card-header">
+                                <h3 class="card-title">Create Department</h3>
+                                <p class="card-subtitle">Organize employees into teams and departments</p>
+                            </div>
+                            <div class="card-body">
+                                <form id="department-form" class="settings-form">
+                                    <input type="hidden" id="dept-id">
+                                    <div class="form-group">
+                                        <label for="dept-name">Department Name</label>
+                                        <input type="text" id="dept-name" placeholder="e.g. Engineering" class="form-control" required>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="dept-description">Description</label>
+                                        <input type="text" id="dept-description" placeholder="Optional description" class="form-control">
+                                    </div>
+                                    <div class="settings-actions">
+                                        <button type="button" class="btn btn-secondary" id="btn-cancel-dept" style="display:none;">Cancel</button>
+                                        <button type="submit" class="btn btn-primary" id="btn-save-dept">Add Department</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                        <div class="card glass-card">
+                            <div class="card-header">
+                                <h3 class="card-title">Department Directory</h3>
+                                <p class="card-subtitle">Manage departments and employee assignments</p>
+                            </div>
+                            <div class="card-body">
+                                <div id="departments-list" class="shifts-list-container">
+                                    <p>Loading departments...</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ================= TAB: LEAVE MANAGEMENT ================= -->
+                <section class="tab-pane" id="tab-leaves">
+                    <div class="card glass-card" style="margin-bottom: 1.5rem;">
+                        <div class="card-header">
+                            <h3 class="card-title">Record Leave (On Behalf of Employee)</h3>
+                            <p class="card-subtitle">Submit and track leave applications with approval status</p>
+                        </div>
+                        <div class="card-body">
+                            <form id="leave-form" class="settings-form">
+                                <input type="hidden" id="leave-id">
+                                <div class="form-row">
+                                    <div class="form-group flex-2">
+                                        <label for="leave-employee">Employee</label>
+                                        <select id="leave-employee" class="form-control" required></select>
+                                    </div>
+                                    <div class="form-group flex-1">
+                                        <label for="leave-type">Leave Type</label>
+                                        <select id="leave-type" class="form-control" required></select>
+                                    </div>
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label for="leave-start">Start Date</label>
+                                        <input type="date" id="leave-start" class="form-control" required>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="leave-end">End Date</label>
+                                        <input type="date" id="leave-end" class="form-control" required>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="leave-status">Status</label>
+                                        <select id="leave-status" class="form-control">
+                                            <option value="Pending">Pending</option>
+                                            <option value="Approved">Approved</option>
+                                            <option value="Rejected">Rejected</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group toggle-container">
+                                        <label for="leave-half-day">Half Day Leave</label>
+                                        <label class="switch">
+                                            <input type="checkbox" id="leave-half-day">
+                                            <span class="slider round"></span>
+                                        </label>
+                                    </div>
+                                    <div class="form-group" id="half-day-period-group" style="display:none;">
+                                        <label for="leave-half-period">Period</label>
+                                        <select id="leave-half-period" class="form-control">
+                                            <option value="AM">AM (Morning)</option>
+                                            <option value="PM">PM (Afternoon)</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group toggle-container">
+                                        <label for="leave-app-received">Application Received</label>
+                                        <label class="switch">
+                                            <input type="checkbox" id="leave-app-received">
+                                            <span class="slider round"></span>
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="form-group">
+                                    <label for="leave-reason">Reason</label>
+                                    <input type="text" id="leave-reason" placeholder="Reason for leave..." class="form-control">
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group flex-1">
+                                        <label for="leave-recorded-by">Recorded By (HR/Admin)</label>
+                                        <input type="text" id="leave-recorded-by" placeholder="Your name" class="form-control">
+                                    </div>
+                                    <div class="form-group flex-2">
+                                        <label for="leave-notes">Internal Notes</label>
+                                        <input type="text" id="leave-notes" placeholder="Optional notes" class="form-control">
+                                    </div>
+                                </div>
+                                <div class="settings-actions">
+                                    <button type="button" class="btn btn-secondary" id="btn-cancel-leave" style="display:none;">Cancel Edit</button>
+                                    <button type="submit" class="btn btn-primary" id="btn-save-leave">Submit Leave Record</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+
+                    <div class="card glass-card">
+                        <div class="filter-bar" style="border-bottom:none; margin-bottom:0; padding-bottom:0;">
+                            <div class="filter-group">
+                                <label for="leave-filter-status">Filter Status</label>
+                                <select id="leave-filter-status" class="form-control">
+                                    <option value="">All</option>
+                                    <option value="Pending">Pending</option>
+                                    <option value="Approved">Approved</option>
+                                    <option value="Rejected">Rejected</option>
+                                </select>
+                            </div>
+                            <div class="filter-group">
+                                <label for="leave-filter-dept">Department</label>
+                                <select id="leave-filter-dept" class="form-control">
+                                    <option value="">All Departments</option>
+                                </select>
+                            </div>
+                            <div class="filter-actions">
+                                <button class="btn btn-primary btn-full" id="btn-refresh-leaves">Refresh</button>
+                            </div>
+                        </div>
+                        <div class="table-container">
+                            <table class="data-table" id="leaves-table">
+                                <thead>
+                                    <tr>
+                                        <th>Employee</th>
+                                        <th>Department</th>
+                                        <th>Leave Type</th>
+                                        <th>Dates</th>
+                                        <th>Reason</th>
+                                        <th>App Received</th>
+                                        <th>Status</th>
+                                        <th>Recorded By</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="leaves-table-body">
+                                    <tr><td colspan="9" class="text-center">Loading leave records...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ================= TAB: SETTINGS ================= -->
+                <section class="tab-pane" id="tab-settings">
+                    <div class="settings-grid">
+                        <!-- ZKTeco Config Form -->
+                        <div class="card glass-card">
+                            <div class="card-header">
+                                <h3 class="card-title">ZKTeco Hardware Configuration</h3>
+                                <p class="card-subtitle">Connect your local uFace800 hardware device</p>
+                            </div>
+                            <div class="card-body">
+                                <form id="settings-form" class="settings-form">
+                                    <div class="form-row">
+                                        <div class="form-group flex-2">
+                                            <label for="device-ip">Device IP Address</label>
+                                            <input type="text" id="device-ip" value="192.168.1.201" class="form-control" required>
+                                        </div>
+                                        <div class="form-group flex-1">
+                                            <label for="device-port">Port</label>
+                                            <input type="number" id="device-port" value="4370" class="form-control" required>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="form-group">
+                                        <label for="device-key">Comm Key / Password</label>
+                                        <input type="number" id="device-key" value="0" class="form-control">
+                                        <small class="form-help">Enter 0 if no device communications password is configured.</small>
+                                    </div>
+
+                                    <div class="form-group">
+                                        <label for="sync-interval">Auto-Sync Interval (Minutes)</label>
+                                        <input type="number" id="sync-interval" value="5" min="1" max="60" class="form-control" required>
+                                    </div>
+
+                                    <div class="settings-actions">
+                                        <button type="submit" class="btn btn-primary" id="btn-save-settings">Save Hardware Settings</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+
+                        <!-- Shift Times Config Form -->
+                        <div class="card glass-card">
+                            <div class="card-header">
+                                <h3 class="card-title">Shift Management</h3>
+                                <p class="card-subtitle">Manage company shifts and late threshold calculations</p>
+                            </div>
+                            <div class="card-body">
+                                <div class="shifts-list-container" id="shifts-list">
+                                    <!-- Injected dynamically -->
+                                    <p>Loading shifts...</p>
+                                </div>
+                                
+                                <hr class="divider">
+                                
+                                <h4 class="form-section-title">Create / Update Shift</h4>
+                                <form id="shift-form" class="settings-form">
+                                    <input type="hidden" id="shift-id">
+                                    
+                                    <div class="form-group">
+                                        <label for="shift-name">Shift Name</label>
+                                        <input type="text" id="shift-name" placeholder="e.g. Morning Shift" class="form-control" required>
+                                    </div>
+                                    
+                                    <div class="form-row">
+                                        <div class="form-group">
+                                            <label for="shift-start">Start Time</label>
+                                            <input type="time" id="shift-start" class="form-control" required>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="shift-end">End Time</label>
+                                            <input type="time" id="shift-end" class="form-control" required>
+                                        </div>
+                                    </div>
+
+                                    <div class="form-row">
+                                        <div class="form-group">
+                                            <label for="shift-grace">Grace Period (Minutes)</label>
+                                            <input type="number" id="shift-grace" value="15" min="0" class="form-control" required>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="shift-late">Absent Threshold (Minutes)</label>
+                                            <input type="number" id="shift-late" value="30" min="0" class="form-control" required>
+                                        </div>
+                                    </div>
+
+                                    <div class="settings-actions">
+                                        <button type="button" class="btn btn-secondary" id="btn-cancel-shift" style="display:none;">Cancel</button>
+                                        <button type="submit" class="btn btn-primary" id="btn-save-shift">Add Shift Configuration</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <!-- Edit Employee Modal -->
+    <div class="modal" id="employee-modal">
+        <div class="modal-content glass-card">
+            <div class="modal-header">
+                <h3>Assign Employee Shift</h3>
+                <button class="modal-close" id="btn-close-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="edit-employee-form">
+                    <input type="hidden" id="edit-emp-id">
+                    <div class="form-group">
+                        <label>Employee Name</label>
+                        <input type="text" id="edit-emp-name" class="form-control" readonly>
+                    </div>
+                    <div class="form-group">
+                        <label for="edit-emp-department">Department</label>
+                        <select id="edit-emp-department" class="form-control">
+                            <option value="">Unassigned</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="edit-emp-shift">Assigned Shift</label>
+                        <select id="edit-emp-shift" class="form-control">
+                            <!-- Populated dynamically -->
+                        </select>
+                    </div>
+                    <div class="form-group toggle-container">
+                        <label for="edit-emp-active">Account Status (Active)</label>
+                        <label class="switch">
+                            <input type="checkbox" id="edit-emp-active" checked>
+                            <span class="slider round"></span>
+                        </label>
+                    </div>
+                    <div class="modal-actions">
+                        <button type="submit" class="btn btn-primary">Save Employee Details</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- JS Logic -->
+    <script src="/js/app.js"></script>
+</body>
+</html>
