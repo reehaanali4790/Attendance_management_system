@@ -68,7 +68,7 @@ async function apiFetch(url, options = {}) {
         headers["Content-Type"] = "application/json";
     }
 
-    const response = await apiFetch(url, { ...options, headers });
+    const response = await fetch(url, { ...options, headers });
 
     if (response.status === 401) {
         clearAuthToken();
