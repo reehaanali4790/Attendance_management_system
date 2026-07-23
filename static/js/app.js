@@ -29,6 +29,8 @@ function showLoginScreen(message = "") {
     const appRoot = document.getElementById("app-root");
     const loginError = document.getElementById("login-error");
 
+    document.body.classList.add("auth-login-mode");
+
     if (loginScreen) loginScreen.hidden = false;
     if (appRoot) appRoot.hidden = true;
 
@@ -51,6 +53,8 @@ function showLoginScreen(message = "") {
 function showAppShell() {
     const loginScreen = document.getElementById("login-screen");
     const appRoot = document.getElementById("app-root");
+
+    document.body.classList.remove("auth-login-mode");
 
     if (loginScreen) loginScreen.hidden = true;
     if (appRoot) appRoot.hidden = false;

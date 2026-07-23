@@ -43,10 +43,18 @@ body {
     overflow-x: hidden;
 }
 
+body.auth-login-mode {
+    overflow: hidden;
+}
+
 /* App Container Layout */
 .app-container {
     display: flex;
     min-height: 100vh;
+}
+
+#app-root[hidden] {
+    display: none !important;
 }
 
 /* Sidebar Navigation */
@@ -1089,6 +1097,9 @@ input:checked + .slider:before {
 
 /* Login Screen */
 .login-screen {
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
     min-height: 100vh;
     display: flex;
     align-items: center;
@@ -1098,6 +1109,10 @@ input:checked + .slider:before {
         radial-gradient(circle at top right, rgba(56, 189, 248, 0.12), transparent 40%),
         radial-gradient(circle at bottom left, rgba(139, 92, 246, 0.1), transparent 35%),
         var(--bg-primary);
+}
+
+.login-screen[hidden] {
+    display: none !important;
 }
 
 .login-card {
