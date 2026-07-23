@@ -196,3 +196,19 @@ class DashboardSummary(BaseModel):
     recent_punches: List[RecentPunch]
     weekly_trend: dict
     department_stats: Optional[List[dict]] = None
+
+
+# --- Authentication ---
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+class UserResponse(BaseModel):
+    id: int
+    username: str
+    full_name: Optional[str] = None
+    is_active: bool
+
+    class Config:
+        from_attributes = True

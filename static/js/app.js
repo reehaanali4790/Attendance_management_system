@@ -1,5 +1,6 @@
 // Constants & Global State
 const API_BASE = "";
+const TOKEN_KEY = "ams_auth_token";
 let currentTab = "dashboard";
 let nextSyncCountdown = 300; // in seconds
 let countdownTimer = null;
@@ -9,6 +10,171 @@ let allDepartments = [];
 let allLeaveTypes = [];
 let allEmployeesCache = [];
 let leavesCache = [];
+
+// --- Authentication ---
+function getAuthToken() {
+    return localStorage.getItem(TOKEN_KEY);
+}
+
+function setAuthToken(token) {
+    localStorage.setItem(TOKEN_KEY, token);
+}
+
+function clearAuthToken() {
+    localStorage.removeItem(TOKEN_KEY);
+}
+
+function showLoginScreen(message = "") {
+    const loginScreen = document.getElementById("login-screen");
+    const appRoot = document.getElementById("app-root");
+    const loginError = document.getElementById("login-error");
+
+    if (loginScreen) loginScreen.hidden = false;
+    if (appRoot) appRoot.hidden = true;
+
+    if (loginError) {
+        if (message) {
+            loginError.textContent = message;
+            loginError.hidden = false;
+        } else {
+            loginError.hidden = true;
+            loginError.textContent = "";
+        }
+    }
+
+    if (countdownTimer) {
+        clearInterval(countdownTimer);
+        countdownTimer = null;
+    }
+}
+
+function showAppShell() {
+    const loginScreen = document.getElementById("login-screen");
+    const appRoot = document.getElementById("app-root");
+
+    if (loginScreen) loginScreen.hidden = true;
+    if (appRoot) appRoot.hidden = false;
+}
+
+async function apiFetch(url, options = {}) {
+    const headers = { ...(options.headers || {}) };
+    const token = getAuthToken();
+
+    if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+    }
+
+    if (options.body && typeof options.body === "string" && !headers["Content-Type"]) {
+        headers["Content-Type"] = "application/json";
+    }
+
+    const response = await apiFetch(url, { ...options, headers });
+
+    if (response.status === 401) {
+        clearAuthToken();
+        showLoginScreen("Session expired. Please sign in again.");
+        throw new Error("Unauthorized");
+    }
+
+    return response;
+}
+
+async function loginUser(username, password) {
+    const form = new URLSearchParams();
+    form.append("username", username);
+    form.append("password", password);
+
+    const response = await fetch(`${API_BASE}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: form.toString(),
+    });
+
+    if (!response.ok) {
+        let detail = "Incorrect username or password";
+        try {
+            const data = await response.json();
+            if (data.detail) detail = data.detail;
+        } catch (_) {}
+        throw new Error(detail);
+    }
+
+    const data = await response.json();
+    setAuthToken(data.access_token);
+}
+
+function setupAuth() {
+    const loginForm = document.getElementById("login-form");
+    const logoutBtn = document.getElementById("btn-logout");
+
+    if (loginForm) {
+        loginForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            const username = document.getElementById("login-username").value.trim();
+            const password = document.getElementById("login-password").value;
+            const submitBtn = document.getElementById("login-submit-btn");
+            const loginError = document.getElementById("login-error");
+
+            submitBtn.disabled = true;
+            submitBtn.textContent = "Signing in...";
+            loginError.hidden = true;
+
+            try {
+                await loginUser(username, password);
+                showAppShell();
+                initializeAuthenticatedApp();
+            } catch (error) {
+                loginError.textContent = error.message || "Login failed";
+                loginError.hidden = false;
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = "Sign In";
+            }
+        });
+    }
+
+    if (logoutBtn) {
+        logoutBtn.addEventListener("click", () => {
+            clearAuthToken();
+            showLoginScreen();
+        });
+    }
+}
+
+async function bootstrapApp() {
+    setupAuth();
+
+    const token = getAuthToken();
+    if (!token) {
+        showLoginScreen();
+        return;
+    }
+
+    try {
+        const response = await apiFetch(`${API_BASE}/api/auth/me`);
+        if (!response.ok) throw new Error("Invalid session");
+        showAppShell();
+        initializeAuthenticatedApp();
+    } catch (_) {
+        clearAuthToken();
+        showLoginScreen();
+    }
+}
+
+function initializeAuthenticatedApp() {
+    setupTabNavigation();
+    setupAttendanceFilters();
+    setupSettingsForms();
+    setupEmployeeModal();
+    setupDepartmentForm();
+    setupLeaveForm();
+
+    loadDashboardData();
+    loadAllShifts();
+    loadAllDepartments();
+    loadLeaveTypes();
+    startCountdown();
+}
 
 // DOM Elements
 const tabButtons = document.querySelectorAll(".nav-item");
@@ -24,21 +190,7 @@ const syncBtnText = document.getElementById("sync-btn-text");
 
 // Initialize application on load
 document.addEventListener("DOMContentLoaded", () => {
-    setupTabNavigation();
-    setupAttendanceFilters();
-    setupSettingsForms();
-    setupEmployeeModal();
-    setupDepartmentForm();
-    setupLeaveForm();
-    
-    // Perform initial load
-    loadDashboardData();
-    loadAllShifts();
-    loadAllDepartments();
-    loadLeaveTypes();
-    
-    // Start countdown timer
-    startCountdown();
+    bootstrapApp();
 });
 
 // 1. Tab Switching System
@@ -133,7 +285,7 @@ async function triggerSync(isAuto = false) {
     syncBtnText.textContent = "Syncing...";
     
     try {
-        const response = await fetch(`${API_BASE}/api/sync`, { method: "POST" });
+        const response = await apiFetch(`${API_BASE}/api/sync`, { method: "POST" });
         if (!response.ok) {
             const err = await response.json();
             throw new Error(err.detail || "Sync failed");
@@ -163,7 +315,7 @@ async function triggerSync(isAuto = false) {
 // 3. Dashboard Functionality
 async function loadDashboardData() {
     try {
-        const response = await fetch(`${API_BASE}/api/dashboard`);
+        const response = await apiFetch(`${API_BASE}/api/dashboard`);
         if (!response.ok) throw new Error("Failed to fetch dashboard stats");
         const data = await response.json();
         
@@ -350,7 +502,7 @@ function setupAttendanceFilters() {
         loadAttendanceLogs();
     });
     
-    document.getElementById("btn-export-excel").addEventListener("click", () => {
+    document.getElementById("btn-export-excel").addEventListener("click", async () => {
         const start = document.getElementById("filter-start-date").value;
         const end = document.getElementById("filter-end-date").value;
         const status = document.getElementById("filter-status").value;
@@ -363,8 +515,22 @@ function setupAttendanceFilters() {
         if (status) url += `status=${status}&`;
         if (search) url += `search=${encodeURIComponent(search)}&`;
         if (departmentId) url += `department_id=${departmentId}&`;
-        
-        window.location.href = url;
+
+        try {
+            const response = await apiFetch(url);
+            if (!response.ok) throw new Error("Export failed");
+            const blob = await response.blob();
+            const downloadUrl = window.URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = downloadUrl;
+            link.download = `attendance_export_${new Date().toISOString().slice(0, 10)}.xlsx`;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            window.URL.revokeObjectURL(downloadUrl);
+        } catch (error) {
+            alert(error.message || "Could not export attendance data.");
+        }
     });
     
     populateDepartmentSelect("filter-department", true, null, "All Departments");
@@ -388,7 +554,7 @@ async function loadAttendanceLogs() {
     if (departmentId) url += `department_id=${departmentId}&`;
     
     try {
-        const response = await fetch(url);
+        const response = await apiFetch(url);
         if (!response.ok) throw new Error("Could not load attendance logs");
         const logs = await response.json();
         
@@ -442,7 +608,7 @@ async function loadEmployees() {
     listEl.innerHTML = `<div class="empty-state"><p>Loading employee directory...</p></div>`;
     
     try {
-        const response = await fetch(`${API_BASE}/api/employees`);
+        const response = await apiFetch(`${API_BASE}/api/employees`);
         if (!response.ok) throw new Error("Could not load employees");
         const employees = await response.json();
         
@@ -531,7 +697,7 @@ function setupEmployeeModal() {
         const isActive = document.getElementById("edit-emp-active").checked;
         
         try {
-            const response = await fetch(`${API_BASE}/api/employees/${empId}`, {
+            const response = await apiFetch(`${API_BASE}/api/employees/${empId}`, {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -587,7 +753,7 @@ function setupSettingsForms() {
         };
         
         try {
-            const response = await fetch(`${API_BASE}/api/settings`, {
+            const response = await apiFetch(`${API_BASE}/api/settings`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(payload)
@@ -633,14 +799,14 @@ function setupSettingsForms() {
             let response;
             if (id) {
                 // Update existing shift
-                response = await fetch(`${API_BASE}/api/shifts/${id}`, {
+                response = await apiFetch(`${API_BASE}/api/shifts/${id}`, {
                     method: "PUT",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify(payload)
                 });
             } else {
                 // Create new shift
-                response = await fetch(`${API_BASE}/api/shifts`, {
+                response = await apiFetch(`${API_BASE}/api/shifts`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify(payload)
@@ -681,7 +847,7 @@ function resetShiftForm() {
 
 async function loadSettings() {
     try {
-        const response = await fetch(`${API_BASE}/api/settings`);
+        const response = await apiFetch(`${API_BASE}/api/settings`);
         if (!response.ok) throw new Error("Could not load hardware settings");
         const settings = await response.json();
         
@@ -703,7 +869,7 @@ async function loadAllShifts() {
     listEl.innerHTML = "<p>Loading shifts...</p>";
     
     try {
-        const response = await fetch(`${API_BASE}/api/shifts`);
+        const response = await apiFetch(`${API_BASE}/api/shifts`);
         if (!response.ok) throw new Error("Could not load company shifts");
         allShifts = await response.json();
         
@@ -768,7 +934,7 @@ function populateDepartmentSelect(selectId, includeBlank = false, selectedId = n
 
 async function loadAllDepartments() {
     try {
-        const response = await fetch(`${API_BASE}/api/departments`);
+        const response = await apiFetch(`${API_BASE}/api/departments`);
         if (!response.ok) throw new Error("Could not load departments");
         allDepartments = await response.json();
         populateDepartmentSelect("filter-department", true, null, "All Departments");
@@ -788,7 +954,7 @@ function setupDepartmentForm() {
             is_active: true
         };
         try {
-            const response = await fetch(
+            const response = await apiFetch(
                 id ? `${API_BASE}/api/departments/${id}` : `${API_BASE}/api/departments`,
                 {
                     method: id ? "PUT" : "POST",
@@ -856,7 +1022,7 @@ window.editDepartment = function(id, name, description) {
 window.deleteDepartment = async function(id, name) {
     if (!confirm(`Delete department "${name}"?`)) return;
     try {
-        const response = await fetch(`${API_BASE}/api/departments/${id}`, { method: "DELETE" });
+        const response = await apiFetch(`${API_BASE}/api/departments/${id}`, { method: "DELETE" });
         if (!response.ok) {
             const err = await response.json();
             throw new Error(err.detail || "Could not delete department");
@@ -871,7 +1037,7 @@ window.deleteDepartment = async function(id, name) {
 // 9. Leave Management
 async function loadLeaveTypes() {
     try {
-        const response = await fetch(`${API_BASE}/api/leave-types`);
+        const response = await apiFetch(`${API_BASE}/api/leave-types`);
         if (!response.ok) throw new Error("Could not load leave types");
         allLeaveTypes = await response.json();
         const select = document.getElementById("leave-type");
@@ -893,7 +1059,7 @@ async function loadLeaveFormOptions() {
     await loadLeaveTypes();
     await loadAllDepartments();
     try {
-        const response = await fetch(`${API_BASE}/api/employees`);
+        const response = await apiFetch(`${API_BASE}/api/employees`);
         if (!response.ok) throw new Error("Could not load employees");
         allEmployeesCache = await response.json();
         const select = document.getElementById("leave-employee");
@@ -946,7 +1112,7 @@ function setupLeaveForm() {
             notes: document.getElementById("leave-notes").value || null
         };
         try {
-            const response = await fetch(
+            const response = await apiFetch(
                 id ? `${API_BASE}/api/leaves/${id}` : `${API_BASE}/api/leaves`,
                 {
                     method: id ? "PUT" : "POST",
@@ -999,7 +1165,7 @@ async function loadLeaves() {
     if (deptId) url += `department_id=${deptId}&`;
 
     try {
-        const response = await fetch(url);
+        const response = await apiFetch(url);
         if (!response.ok) throw new Error("Could not load leave records");
         const leaves = await response.json();
         tableBody.innerHTML = "";
@@ -1065,7 +1231,7 @@ window.editLeaveById = function(id) {
 window.deleteLeave = async function(id) {
     if (!confirm("Delete this leave record? Attendance will be recalculated.")) return;
     try {
-        const response = await fetch(`${API_BASE}/api/leaves/${id}`, { method: "DELETE" });
+        const response = await apiFetch(`${API_BASE}/api/leaves/${id}`, { method: "DELETE" });
         if (!response.ok) throw new Error("Could not delete leave record");
         loadLeaves();
         if (currentTab === "dashboard") loadDashboardData();

@@ -14,7 +14,32 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
-    <div class="app-container">
+    <!-- Login Screen -->
+    <div id="login-screen" class="login-screen">
+        <div class="login-card">
+            <div class="login-brand">
+                <div class="logo-glow login-logo-glow"></div>
+                <h1>Attendance Hub</h1>
+                <p>Sign in to access your management dashboard</p>
+            </div>
+            <form id="login-form" class="login-form">
+                <div class="form-group">
+                    <label for="login-username">Username</label>
+                    <input type="text" id="login-username" class="form-control" placeholder="admin@jmtraders.com" autocomplete="username" required>
+                </div>
+                <div class="form-group">
+                    <label for="login-password">Password</label>
+                    <input type="password" id="login-password" class="form-control" placeholder="Enter password" autocomplete="current-password" required>
+                </div>
+                <p id="login-error" class="login-error" hidden></p>
+                <button type="submit" class="btn btn-primary login-btn" id="login-submit-btn">
+                    Sign In
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <div class="app-container" id="app-root" hidden>
         <!-- Sidebar Navigation -->
         <aside class="sidebar">
             <div class="sidebar-header">
@@ -51,6 +76,11 @@
                     <span>Settings</span>
                 </button>
             </nav>
+
+            <button class="btn-logout" id="btn-logout" type="button">
+                <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+                <span>Logout</span>
+            </button>
             
             <!-- Connection Card -->
             <div class="connection-status-card">

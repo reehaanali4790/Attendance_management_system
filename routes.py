@@ -7,12 +7,13 @@ from database import get_db
 import models
 import schemas
 from sync_service import SyncService
+from auth import get_current_user
 import datetime
 from typing import List, Optional
 import json
 import ai_service
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 VALID_LEAVE_STATUSES = {"Pending", "Approved", "Rejected"}
 

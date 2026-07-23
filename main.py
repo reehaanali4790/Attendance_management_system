@@ -8,6 +8,8 @@ import os
 from database import engine, Base, SessionLocal
 from migrate import run_migrations
 from routes import router
+from auth_routes import auth_router
+from auth import seed_default_admin
 from scheduler import start_scheduler, stop_scheduler
 from sync_service import SyncService
 
@@ -21,6 +23,7 @@ async def lifespan(app: FastAPI):
     db = SessionLocal()
     try:
         SyncService.initialize_defaults(db)
+        seed_default_admin(db)
         try:
             SyncService.sync(db, full_recalc=True)
         except Exception as e:
@@ -52,6 +55,7 @@ app.add_middleware(
 )
 
 # Register API endpoints
+app.include_router(auth_router)
 app.include_router(router)
 
 
