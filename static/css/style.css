@@ -341,6 +341,27 @@ body.auth-login-mode {
     box-shadow: 0 6px 16px rgba(16, 185, 129, 0.35);
 }
 
+.btn-sm {
+    padding: 0.4rem 0.75rem;
+    font-size: 0.8rem;
+    border-radius: 8px;
+}
+
+.hidden {
+    display: none !important;
+}
+
+.scope-banner {
+    margin-bottom: 1rem;
+    padding: 0.75rem 1rem;
+    border-radius: 12px;
+    background: rgba(56, 189, 248, 0.08);
+    border: 1px solid rgba(56, 189, 248, 0.2);
+    color: var(--color-blue);
+    font-size: 0.875rem;
+    font-weight: 500;
+}
+
 .btn-full {
     width: 100%;
 }
@@ -414,6 +435,32 @@ body.auth-login-mode {
     transform: translateY(-3px);
     background-color: var(--bg-card-hover);
 }
+
+.metric-card.metric-drill {
+    cursor: pointer;
+    user-select: none;
+    pointer-events: auto;
+}
+
+.metric-card.metric-drill:focus-visible {
+    outline: 2px solid var(--color-blue);
+    outline-offset: 2px;
+}
+
+.metric-hint {
+    display: block;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    margin-top: 0.25rem;
+    opacity: 0;
+    transition: opacity var(--transition-fast);
+}
+
+.metric-card.metric-drill:hover .metric-hint,
+.metric-card.metric-drill:focus-visible .metric-hint {
+    opacity: 1;
+}
+
 
 .metric-icon {
     width: 48px;

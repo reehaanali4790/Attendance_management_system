@@ -2,6 +2,7 @@
 const API_BASE = "";
 const TOKEN_KEY = "ams_auth_token";
 let currentTab = "dashboard";
+let employeeListFilter = null; // null | "active"
 let nextSyncCountdown = 300; // in seconds
 let countdownTimer = null;
 let trendChart = null;
@@ -10,6 +11,8 @@ let allDepartments = [];
 let allLeaveTypes = [];
 let allEmployeesCache = [];
 let leavesCache = [];
+let dashboardDrilldownBound = false;
+let attendanceFiltersBound = false;
 
 // --- Authentication ---
 function getAuthToken() {
@@ -167,6 +170,7 @@ async function bootstrapApp() {
 
 function initializeAuthenticatedApp() {
     setupTabNavigation();
+    setupDashboardDrilldown();
     setupAttendanceFilters();
     setupSettingsForms();
     setupEmployeeModal();
@@ -198,41 +202,135 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 // 1. Tab Switching System
+function switchTab(tabName, options = {}) {
+    const buttons = document.querySelectorAll(".nav-item");
+    const panes = document.querySelectorAll(".tab-pane");
+
+    buttons.forEach(button => {
+        button.classList.toggle("active", button.getAttribute("data-tab") === tabName);
+    });
+
+    panes.forEach(pane => pane.classList.remove("active"));
+    const targetPane = document.getElementById(`tab-${tabName}`);
+    if (targetPane) targetPane.classList.add("active");
+
+    currentTab = tabName;
+    updateHeaderTitles();
+
+    if (options.subtitle) {
+        const subtitleEl = document.getElementById("active-tab-subtitle");
+        if (subtitleEl) subtitleEl.textContent = options.subtitle;
+    }
+
+    if (tabName === "dashboard") {
+        loadDashboardData();
+    } else if (tabName === "attendance") {
+        loadAttendanceLogs();
+    } else if (tabName === "employees") {
+        loadEmployees();
+    } else if (tabName === "departments") {
+        loadDepartments();
+    } else if (tabName === "leaves") {
+        loadLeaveFormOptions();
+        loadLeaves();
+    } else if (tabName === "settings") {
+        loadSettings();
+        loadAllShifts();
+    }
+}
+
 function setupTabNavigation() {
-    tabButtons.forEach(button => {
+    document.querySelectorAll(".nav-item").forEach(button => {
         button.addEventListener("click", () => {
-            const tabName = button.getAttribute("data-tab");
-            
-            // Update buttons active class
-            tabButtons.forEach(b => b.classList.remove("active"));
-            button.classList.add("active");
-            
-            // Update panes active class
-            tabPanes.forEach(pane => pane.classList.remove("active"));
-            const targetPane = document.getElementById(`tab-${tabName}`);
-            if (targetPane) targetPane.classList.add("active");
-            
-            // Set tab details in header
-            currentTab = tabName;
-            updateHeaderTitles();
-            
-            // Trigger specific tab loads
-            if (tabName === "dashboard") {
-                loadDashboardData();
-            } else if (tabName === "attendance") {
-                loadAttendanceLogs();
-            } else if (tabName === "employees") {
-                loadEmployees();
-            } else if (tabName === "departments") {
-                loadDepartments();
-            } else if (tabName === "leaves") {
-                loadLeaveFormOptions();
-                loadLeaves();
-            } else if (tabName === "settings") {
-                loadSettings();
-                loadAllShifts();
+            const tab = button.getAttribute("data-tab");
+            if (tab === "employees") {
+                employeeListFilter = null;
             }
+            switchTab(tab);
         });
+    });
+}
+
+function getTodayDateString() {
+    return new Date().toISOString().split("T")[0];
+}
+
+function applyAttendanceFilters({ startDate, endDate, status = "", search = "", departmentId = "" }) {
+    const startEl = document.getElementById("filter-start-date");
+    const endEl = document.getElementById("filter-end-date");
+    const statusEl = document.getElementById("filter-status");
+    const searchEl = document.getElementById("filter-search-input");
+    const deptEl = document.getElementById("filter-department");
+
+    if (startEl) startEl.value = startDate;
+    if (endEl) endEl.value = endDate;
+    if (statusEl) statusEl.value = status;
+    if (searchEl) searchEl.value = search;
+    if (deptEl) deptEl.value = departmentId;
+}
+
+function setupDashboardDrilldown() {
+    if (dashboardDrilldownBound) return;
+    dashboardDrilldownBound = true;
+
+    document.addEventListener("click", (event) => {
+        const card = event.target.closest(".metric-drill");
+        if (!card) return;
+
+        const drill = card.getAttribute("data-drill");
+        if (!drill) return;
+
+        event.preventDefault();
+        drillFromDashboard(drill);
+    });
+
+    document.addEventListener("keydown", (event) => {
+        const card = event.target.closest(".metric-drill");
+        if (!card) return;
+        if (event.key !== "Enter" && event.key !== " ") return;
+
+        event.preventDefault();
+        const drill = card.getAttribute("data-drill");
+        if (drill) drillFromDashboard(drill);
+    });
+}
+
+function drillFromDashboard(drillType) {
+    const today = getTodayDateString();
+
+    if (drillType === "active") {
+        employeeListFilter = "active";
+        switchTab("employees", {
+            subtitle: "Active employees in your organization.",
+        });
+        return;
+    }
+
+    const statusMap = {
+        present: "Present",
+        late: "Late",
+        absent: "Absent",
+        "on-leave": "On Leave",
+    };
+
+    applyAttendanceFilters({
+        startDate: today,
+        endDate: today,
+        status: statusMap[drillType] || "",
+        search: "",
+        departmentId: "",
+    });
+
+    const labels = {
+        present: "Employees marked Present today.",
+        late: "Employees marked Late today.",
+        absent: "Employees marked Absent today.",
+        "on-leave": "Employees on Leave today.",
+        hours: "All attendance records for today.",
+    };
+
+    switchTab("attendance", {
+        subtitle: labels[drillType] || "Search, filter, and inspect detailed employee timesheets.",
     });
 }
 
@@ -323,12 +421,17 @@ async function loadDashboardData() {
         if (!response.ok) throw new Error("Failed to fetch dashboard stats");
         const data = await response.json();
         
-        // Update stats
-        document.getElementById("stat-present").textContent = data.present_today;
-        document.getElementById("stat-late").textContent = data.late_today;
-        document.getElementById("stat-absent").textContent = data.absent_today;
-        document.getElementById("stat-hours").textContent = `${data.avg_work_hours_today}h`;
-        document.getElementById("stat-on-leave").textContent = data.on_leave_today || 0;
+        const setStat = (id, value) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = value;
+        };
+
+        setStat("stat-active", data.total_employees);
+        setStat("stat-present", data.present_today);
+        setStat("stat-late", data.late_today);
+        setStat("stat-absent", data.absent_today);
+        setStat("stat-hours", `${data.avg_work_hours_today}h`);
+        setStat("stat-on-leave", data.on_leave_today || 0);
         
         // Update Connection status bar
         updateConnectionStatus(data.connection_status, data.last_sync_time);
@@ -490,6 +593,9 @@ function renderTrendChart(weeklyTrend) {
 
 // 4. Attendance Log Table
 function setupAttendanceFilters() {
+    if (attendanceFiltersBound) return;
+    attendanceFiltersBound = true;
+
     // Set default dates: start of current month to today
     const today = new Date();
     const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
@@ -608,72 +714,68 @@ async function loadAttendanceLogs() {
 
 // 5. Employees Directory Management
 async function loadEmployees() {
-    const listEl = document.getElementById("employees-list");
-    listEl.innerHTML = `<div class="empty-state"><p>Loading employee directory...</p></div>`;
+    const tableBody = document.getElementById("employees-table-body");
+    const scopeBanner = document.getElementById("employees-scope-banner");
+    tableBody.innerHTML = `<tr><td colspan="7" class="text-center">Loading employee directory...</td></tr>`;
+
+    if (employeeListFilter === "active") {
+        scopeBanner.textContent = "Showing active employees only (from dashboard).";
+        scopeBanner.classList.remove("hidden");
+    } else {
+        scopeBanner.classList.add("hidden");
+        scopeBanner.textContent = "";
+    }
     
     try {
         const response = await apiFetch(`${API_BASE}/api/employees`);
         if (!response.ok) throw new Error("Could not load employees");
-        const employees = await response.json();
+        let employees = await response.json();
+
+        if (employeeListFilter === "active") {
+            employees = employees.filter(emp => emp.is_active);
+        }
         
-        listEl.innerHTML = "";
+        tableBody.innerHTML = "";
         
         if (employees.length === 0) {
-            listEl.innerHTML = `<div class="empty-state"><p>No active employees registered yet. Run sync to load device users.</p></div>`;
+            const emptyMessage = employeeListFilter === "active"
+                ? "No active employees found."
+                : "No employees registered yet. Run sync to load device users.";
+            tableBody.innerHTML = `<tr><td colspan="7" class="text-center">${emptyMessage}</td></tr>`;
             return;
         }
         
         employees.forEach(emp => {
-            const initials = emp.name.split(" ").map(n => n[0]).join("").toUpperCase().substring(0, 2);
-            const card = document.createElement("div");
-            card.className = "employee-card";
-            
-            const activeStatusClass = emp.is_active ? "status-online" : "status-offline";
             const shiftName = emp.shift ? emp.shift.name : "Unassigned";
             const deptName = emp.department ? emp.department.name : "Unassigned";
             const startStr = emp.shift ? emp.shift.start_time.substring(0, 5) : "";
             const endStr = emp.shift ? emp.shift.end_time.substring(0, 5) : "";
-            const shiftTimes = emp.shift ? `(${startStr} - ${endStr})` : "";
-            
-            card.innerHTML = `
-                <div class="emp-card-header">
-                    <div class="emp-avatar">${initials}</div>
-                    <div class="emp-meta">
-                        <span class="emp-name">${emp.name}</span>
-                        <span class="emp-id">User ID: ${emp.user_id}</span>
-                    </div>
-                    <div class="pulse-indicator ${activeStatusClass}" style="margin-left:auto;"></div>
-                </div>
-                <div class="emp-details">
-                    <div class="detail-row">
-                        <span>Department:</span>
-                        <span class="detail-val">${deptName}</span>
-                    </div>
-                    <div class="detail-row">
-                        <span>Role Status:</span>
-                        <span class="detail-val">${emp.privilege === 14 ? "Admin" : "Standard User"}</span>
-                    </div>
-                    <div class="detail-row">
-                        <span>Card RFID:</span>
-                        <span class="detail-val">${emp.card_number || "None"}</span>
-                    </div>
-                    <div class="detail-row">
-                        <span>Working Shift:</span>
-                        <span class="detail-val" style="color:var(--color-blue);">${shiftName} <small style="color:var(--text-muted);">${shiftTimes}</small></span>
-                    </div>
-                </div>
-                <div class="emp-actions">
-                    <button class="btn btn-secondary btn-full" onclick="openEditEmployeeModal(${emp.id}, '${emp.name.replace(/'/g, "\\'")}', ${emp.shift_id || 'null'}, ${emp.department_id || 'null'}, ${emp.is_active})">
-                        Configure Profile
+            const shiftTimes = emp.shift ? `${startStr} - ${endStr}` : "-";
+            const roleLabel = emp.privilege === 14 ? "Admin" : "Standard User";
+            const statusBadgeClass = emp.is_active ? "bg-green-badge" : "bg-red-badge";
+            const statusLabel = emp.is_active ? "Active" : "Inactive";
+            const safeName = emp.name.replace(/'/g, "\\'");
+
+            const tr = document.createElement("tr");
+            tr.innerHTML = `
+                <td><strong>${emp.name}</strong></td>
+                <td><code class="conn-ip">${emp.user_id}</code></td>
+                <td>${deptName}</td>
+                <td>${shiftName}<br><small class="page-subtitle">${shiftTimes}</small></td>
+                <td>${roleLabel}</td>
+                <td><span class="badge ${statusBadgeClass}">${statusLabel}</span></td>
+                <td>
+                    <button class="btn btn-secondary btn-sm" onclick="openEditEmployeeModal(${emp.id}, '${safeName}', ${emp.shift_id || 'null'}, ${emp.department_id || 'null'}, ${emp.is_active})">
+                        Configure
                     </button>
-                </div>
+                </td>
             `;
-            listEl.appendChild(card);
+            tableBody.appendChild(tr);
         });
         
     } catch (error) {
         console.error("Employee list error:", error);
-        listEl.innerHTML = `<div class="empty-state"><p class="text-glow-red">Error: ${error.message}</p></div>`;
+        tableBody.innerHTML = `<tr><td colspan="7" class="text-center text-glow-red">Error: ${error.message}</td></tr>`;
     }
 }
 

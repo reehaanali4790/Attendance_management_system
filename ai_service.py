@@ -6,7 +6,7 @@ import json
 import re
 import difflib
 from sqlalchemy import text
-from database import engine
+from database import engine, DATABASE_URL
 from dotenv import load_dotenv
 import openai
 
@@ -14,8 +14,19 @@ import openai
 load_dotenv()
 
 # OpenAI Models
-OPENAI_MODEL = "gpt-4o"
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o").strip()
+OPENAI_FAST_MODEL = os.environ.get("OPENAI_FAST_MODEL", "gpt-4o-mini").strip()
 OPENAI_WHISPER_MODEL = "whisper-1"
+
+_employee_names_cache = {"names": [], "fetched_at": 0.0}
+_EMPLOYEE_CACHE_TTL_SECONDS = 60
+
+
+def get_chat_model(fast: bool = False) -> str:
+    if os.environ.get("OPENAI_FAST_MODE", "").strip().lower() in {"1", "true", "yes"}:
+        return OPENAI_FAST_MODEL
+    return OPENAI_FAST_MODEL if fast else OPENAI_MODEL
+
 
 PHONETIC_GROUPS = [
     frozenset({"omer", "omar", "umer", "amr", "amer", "umair", "omair"}),
@@ -85,44 +96,115 @@ def _tokens_match(word: str, token: str) -> bool:
     token = token.lower()
     if word == token or word in token or token in word:
         return True
-    if difflib.SequenceMatcher(None, word, token).ratio() >= 0.70:
+    if difflib.SequenceMatcher(None, word, token).ratio() >= 0.68:
         return True
     for group in PHONETIC_GROUPS:
         if word in group and token in group:
             return True
     return False
 
+NAME_FILLER_WORDS = frozenset({
+    "acha", "achha", "okay", "ok", "theek", "haan", "ji", "aur", "or", "and",
+    "pichle", "pichlay", "pichla", "thi", "tha", "the", "saal", "mahine", "aaj",
+    "kal", "kitni", "kitne", "kaun", "kon", "kya", "ne", "ki", "ke", "ka", "ko",
+    "hai", "hain", "ho", "tha", "the", "today", "yesterday", "month", "year",
+    "late", "present", "absent", "leave", "leaves", "chutti", "chutiyan", "hazri",
+    "who", "which", "how", "many", "employee", "employees", "log", "sabse", "zyada",
+})
+
+def resolve_employees_from_text(text: str, db_names: list = None) -> list:
+    """
+    Fuzzy-match employee names mentioned in free text against DB Latin names.
+    Always transliterates Urdu script to Latin before matching.
+    """
+    db_names = db_names or get_db_employee_names()
+    if not text or not db_names:
+        return []
+
+    latin = transliterate_query_to_latin(text)
+    latin = _normalize_whitespace(latin)
+    words = [
+        w for w in re.findall(r"\b[A-Za-z0-9]+\b", latin)
+        if len(w) >= 2 and w.lower() not in NAME_FILLER_WORDS
+    ]
+    if not words:
+        return []
+
+    word_lowers = [w.lower() for w in words]
+    matched = []
+
+    for db_name in db_names:
+        tokens = [t for t in re.findall(r"\b[A-Za-z0-9]+\b", db_name) if len(t) >= 2]
+        if not tokens:
+            continue
+
+        if db_name.lower() in latin.lower():
+            matched.append(db_name)
+            continue
+
+        if all(any(_tokens_match(tok, w) for w in words) for tok in tokens):
+            matched.append(db_name)
+            continue
+
+        if len(tokens) == 1:
+            close = difflib.get_close_matches(tokens[0].lower(), word_lowers, n=1, cutoff=0.68)
+            if close:
+                matched.append(db_name)
+                continue
+
+        joined = " ".join(words).lower()
+        if difflib.SequenceMatcher(None, joined, db_name.lower()).ratio() >= 0.68:
+            matched.append(db_name)
+            continue
+
+        close_full = difflib.get_close_matches(db_name.lower(), [joined], n=1, cutoff=0.68)
+        if close_full:
+            matched.append(db_name)
+
+    return list(dict.fromkeys(matched))
+
 def validate_employee_names(suggested_names: list, db_names: list = None) -> list:
     """
     Map LLM-suggested employee names to exact Latin names in the database.
-  Safety rail: never pass hallucinated names to SQL.
+    Safety rail: never pass hallucinated names to SQL.
     """
     db_names = db_names or get_db_employee_names()
     if not suggested_names or not db_names:
         return []
 
     validated = []
+    db_lower_map = {n.lower(): n for n in db_names}
+
     for suggested in suggested_names:
         if not suggested or not isinstance(suggested, str):
             continue
-        suggested_lower = suggested.strip().lower()
-        # Exact match
+
+        suggested_latin = transliterate_query_to_latin(suggested.strip())
+        suggested_lower = suggested_latin.lower()
+
+        if suggested_lower in db_lower_map:
+            name = db_lower_map[suggested_lower]
+            if name not in validated:
+                validated.append(name)
+            continue
+
+        close = difflib.get_close_matches(suggested_lower, list(db_lower_map.keys()), n=1, cutoff=0.68)
+        if close:
+            name = db_lower_map[close[0]]
+            if name not in validated:
+                validated.append(name)
+            continue
+
+        words = [w for w in re.findall(r"\b[A-Za-z0-9]+\b", suggested_lower) if len(w) >= 2]
         for db_name in db_names:
-            if db_name.lower() == suggested_lower:
+            tokens = [t for t in re.findall(r"\b[A-Za-z0-9]+\b", db_name.lower()) if len(t) >= 2]
+            if tokens and words and all(
+                any(_tokens_match(w, t) for w in words) for t in tokens
+            ):
                 if db_name not in validated:
                     validated.append(db_name)
                 break
-        else:
-            # Fuzzy / phonetic match
-            words = [w for w in re.findall(r"\b[A-Za-z0-9]+\b", suggested_lower) if len(w) >= 2]
-            for db_name in db_names:
-                tokens = [t for t in db_name.lower().split() if len(t) >= 2]
-                if tokens and words and all(
-                    any(_tokens_match(w, t) for w in words) for t in tokens
-                ):
-                    if db_name not in validated:
-                        validated.append(db_name)
-                    break
+
     return validated
 
 def understand_query(user_query: str, conversation_history: list = None) -> dict:
@@ -131,6 +213,7 @@ def understand_query(user_query: str, conversation_history: list = None) -> dict
     in ONE structured call — no brittle regex rule lists.
     """
     history = trim_conversation_history(conversation_history or [])
+    latin_query = transliterate_query_to_latin(user_query or "")
     db_names = get_db_employee_names()
     emp_list = "\n".join(f"- {n}" for n in db_names) if db_names else "- (none)"
     today = datetime.date.today()
@@ -159,7 +242,8 @@ CRITICAL RULES:
    - specific_person: question about one named employee's attendance/leaves/status
 
 4. EMPLOYEES: List only employees from the registered list above. Use exact Latin spellings from the list.
-   For Urdu/Roman variants (محمد امر, mohammad umer) map to the correct DB name (Mohammad Omer).
+   NEVER output Urdu script in the employees array — only Latin/English names from the list.
+   For Urdu/Roman variants (محمد امر, mohammad umer, shehryar) map to the correct DB name (Mohammad Omer, Shaharyar).
    Leave employees [] for general questions.
 
 5. METRIC values: leaves, late, present, absent, work_hours, ranking, count, check_in, other
@@ -178,14 +262,16 @@ Return JSON with keys:
 - language (string)
 - reasoning (string, brief — for debugging)"""
 
-    user_content = f"User question: {user_query}"
+    user_content = f"User question: {latin_query}"
+    if latin_query != (user_query or ""):
+        user_content += f"\nOriginal script: {user_query}"
     if history:
         user_content = _format_history_block(history) + user_content
 
     try:
         client = get_openai_client()
         response = client.chat.completions.create(
-            model=OPENAI_MODEL,
+            model=get_chat_model(fast=True),
             messages=[
                 {"role": "system", "content": system_prompt},
                 *[{"role": m["role"], "content": m["content"]} for m in history],
@@ -195,15 +281,22 @@ Return JSON with keys:
             temperature=0.0,
         )
         raw = json.loads(response.choices[0].message.content.strip())
-        resolved = _normalize_whitespace(raw.get("resolved_question") or user_query)
+        resolved = _normalize_whitespace(raw.get("resolved_question") or latin_query)
         suggested_employees = raw.get("employees") or []
         if isinstance(suggested_employees, str):
             suggested_employees = [suggested_employees]
 
         validated = validate_employee_names(suggested_employees, db_names)
+        if not validated:
+            validated = resolve_employees_from_text(resolved, db_names)
+        if not validated:
+            validated = resolve_employees_from_text(latin_query, db_names)
+
         intent = raw.get("intent", "specific_person")
         if intent not in ("general", "specific_person"):
             intent = "general" if not validated else "specific_person"
+        elif validated and intent == "general" and suggested_employees:
+            intent = "specific_person"
 
         understanding = {
             "resolved_question": resolved,
@@ -215,21 +308,24 @@ Return JSON with keys:
             "language": raw.get("language") or detect_query_language(user_query),
             "reasoning": raw.get("reasoning", ""),
             "original_query": user_query,
+            "latin_query": latin_query if latin_query != (user_query or "") else None,
         }
         print(f"[Understand] '{user_query}' -> intent={intent}, employees={validated}, resolved='{resolved}'")
         return understanding
     except Exception as e:
         print(f"[Understand Error] {e}")
+        fallback_validated = resolve_employees_from_text(latin_query, db_names)
         return {
-            "resolved_question": user_query,
-            "intent": "specific_person",
-            "employees": validate_employee_names([], db_names),
+            "resolved_question": latin_query,
+            "intent": "general" if not fallback_validated else "specific_person",
+            "employees": fallback_validated,
             "metric": "other",
             "time_period": None,
             "is_follow_up": bool(history),
             "language": detect_query_language(user_query),
             "reasoning": f"Fallback due to error: {e}",
             "original_query": user_query,
+            "latin_query": latin_query if latin_query != (user_query or "") else None,
         }
 
 def convert_urdu_script_to_latin(user_query: str) -> str:
@@ -259,7 +355,7 @@ def transliterate_query_to_latin(user_query: str) -> str:
     try:
         client = get_openai_client()
         response = client.chat.completions.create(
-            model=OPENAI_MODEL,
+            model=get_chat_model(fast=True),
             messages=[
                 {
                     "role": "system",
@@ -284,7 +380,7 @@ def transliterate_query_to_latin(user_query: str) -> str:
         return dict_result
 
 def get_openai_tts_model() -> str:
-    return os.environ.get("OPENAI_TTS_MODEL", "tts-1-hd").strip().lower()
+    return os.environ.get("OPENAI_TTS_MODEL", "tts-1").strip().lower()
 
 def get_openai_client() -> openai.OpenAI:
     """
@@ -298,12 +394,24 @@ def get_openai_client() -> openai.OpenAI:
 
 def get_db_employee_names() -> list:
     """
-    Fetches all active employee names dynamically from the SQLite database.
+    Fetches active employee names with a short in-memory cache to avoid repeated DB hits per request.
     """
+    import time
+
+    now = time.time()
+    if _employee_names_cache["names"] and (now - _employee_names_cache["fetched_at"]) < _EMPLOYEE_CACHE_TTL_SECONDS:
+        return _employee_names_cache["names"]
+
     try:
         with engine.connect() as conn:
-            res = conn.execute(text("SELECT name FROM employees WHERE is_active = 1 OR is_active IS NULL"))
+            if DATABASE_URL.startswith("sqlite"):
+                sql = "SELECT name FROM employees WHERE is_active = 1 OR is_active IS NULL"
+            else:
+                sql = "SELECT name FROM employees WHERE is_active IS TRUE"
+            res = conn.execute(text(sql))
             names = [row[0].strip() for row in res.fetchall() if row[0]]
+            _employee_names_cache["names"] = names
+            _employee_names_cache["fetched_at"] = now
             return names
     except Exception as e:
         print(f"[DB Employee Fetch Error] {e}")
@@ -366,7 +474,10 @@ def transcribe_audio(audio_bytes: bytes, original_filename: str) -> str:
                 ),
                 temperature=0.0
             )
-        return transcription.text.strip() if transcription and transcription.text else ""
+        text = transcription.text.strip() if transcription and transcription.text else ""
+        if text and any('\u0600' <= c <= '\u06FF' for c in text):
+            text = transliterate_query_to_latin(text)
+        return text
     except Exception as e:
         print(f"[OpenAI Whisper Error] Failed to transcribe audio: {e}")
         raise RuntimeError(f"OpenAI Whisper transcription failed: {e}")
@@ -550,12 +661,21 @@ def generate_sql(user_query: str, conversation_history: list = None) -> dict:
     system_prompt = _build_sql_system_prompt()
     history = trim_conversation_history(conversation_history or [])
 
-    # Step 1: LLM understands intent, resolves follow-ups, identifies employees
-    understanding = understand_query(user_query, history)
+    latin_query = transliterate_query_to_latin(user_query or "")
+    transliterated_query = latin_query if latin_query != (user_query or "") else None
+
+    # Step 1: LLM understands intent, resolves follow-ups, identifies employees (always on Latin text)
+    understanding = understand_query(latin_query, history)
     resolved_query = understanding["resolved_question"]
     query_intent = understanding["intent"]
     candidate_matches = understanding["employees"]
     metric = understanding.get("metric", "other")
+
+    if not candidate_matches and query_intent == "specific_person":
+        candidate_matches = resolve_employees_from_text(resolved_query) or resolve_employees_from_text(latin_query)
+        if candidate_matches:
+            understanding["employees"] = candidate_matches
+            query_intent = "specific_person"
 
     # Build context hint for SQL generation from understanding (not regex rules)
     if query_intent == "general":
@@ -579,14 +699,16 @@ def generate_sql(user_query: str, conversation_history: list = None) -> dict:
         )
 
     try:
-        user_content = f"User Question: {user_query}"
-        if resolved_query != user_query:
+        user_content = f"User Question: {latin_query}"
+        if transliterated_query and user_query:
+            user_content += f"\nOriginal script: {user_query}"
+        if resolved_query != latin_query:
             user_content += f"\nResolved standalone question: {resolved_query}"
         user_content += f"\nIntent: {query_intent} | Metric: {metric} | Time: {understanding.get('time_period')}"
         user_content += match_hint
 
         response = client.chat.completions.create(
-            model=OPENAI_MODEL,
+            model=get_chat_model(),
             messages=_build_openai_messages(system_prompt, history, user_content),
             response_format={"type": "json_object"}
         )
@@ -601,9 +723,13 @@ def generate_sql(user_query: str, conversation_history: list = None) -> dict:
                 sql_str = re.sub(r"'[\u0600-\u06FF\s]+'", f"'{latin_name}'", sql_str)
                 sql_str = re.sub(r"%[\u0600-\u06FF\s]+%", f"%{latin_name}%", sql_str)
                 result["sql"] = sql_str
+            else:
+                result["sql"] = None
+                result["explanation"] = result.get("explanation") or "Could not resolve employee name to Latin database spelling."
 
         result["candidate_matches"] = candidate_matches
-        result["resolved_query"] = resolved_query if resolved_query != user_query else None
+        result["resolved_query"] = resolved_query if resolved_query != latin_query else None
+        result["transliterated_query"] = transliterated_query
         result["query_intent"] = query_intent
         result["understanding"] = understanding
         result["match_hint"] = match_hint.strip()
@@ -614,7 +740,8 @@ def generate_sql(user_query: str, conversation_history: list = None) -> dict:
             "sql": None,
             "explanation": f"Failed to generate SQL query: {e}",
             "candidate_matches": candidate_matches,
-            "resolved_query": resolved_query if resolved_query != user_query else None,
+            "resolved_query": resolved_query if resolved_query != latin_query else None,
+            "transliterated_query": transliterated_query,
             "query_intent": query_intent,
             "understanding": understanding,
             "match_hint": match_hint.strip(),
@@ -829,7 +956,7 @@ CRITICAL RULES FOR CONVERSATIONAL SYNTHESIS:
 
     try:
         response = client.chat.completions.create(
-            model=OPENAI_MODEL,
+            model=get_chat_model(fast=True),
             messages=_build_openai_messages(system_prompt, history, prompt_content)
         )
         return response.choices[0].message.content.strip()
@@ -865,7 +992,7 @@ def prepare_speech_text(text: str, language: str = None) -> str:
     try:
         client = get_openai_client()
         response = client.chat.completions.create(
-            model=OPENAI_MODEL,
+            model=get_chat_model(),
             messages=[
                 {
                     "role": "system",

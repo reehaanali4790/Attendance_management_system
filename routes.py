@@ -613,6 +613,10 @@ class TextQueryRequest(BaseModel):
 class UpdateVoiceRequest(BaseModel):
     voice: str
 
+class SpeakRequest(BaseModel):
+    text: str
+    language: Optional[str] = None
+
 @router.get("/api/ai/status")
 def ai_status():
     return ai_service.get_ai_status()
@@ -626,12 +630,21 @@ def ai_update_voice(payload: UpdateVoiceRequest):
     os.environ["OPENAI_TTS_VOICE"] = voice
     return ai_service.get_ai_status()
 
+@router.post("/api/ai/speak")
+def ai_speak(payload: SpeakRequest):
+    try:
+        speech_text = ai_service.prepare_speech_text(payload.text, payload.language)
+        audio_base64 = ai_service.generate_speech(
+            payload.text,
+            language=payload.language,
+            speech_text=speech_text,
+        )
+        return {"audio": audio_base64, "speech_text": speech_text}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.post("/api/ai/query-text")
-
-
-
-
-def ai_query_text(payload: TextQueryRequest):
+def ai_query_text(payload: TextQueryRequest, include_audio: bool = Query(default=False)):
     try:
         query_text = payload.query
         history = ai_service.trim_conversation_history(
@@ -673,15 +686,16 @@ def ai_query_text(payload: TextQueryRequest):
                 understanding=understanding,
             )
             
-        # 4. Generate speech audio (romanize Urdu for TTS; display text stays Urdu)
+        # 4. Generate speech audio (optional — mobile fetches via /api/ai/speak for faster text-first UX)
         audio_base64 = ""
         speech_text = ""
-        try:
-            tts_lang = (understanding or {}).get("language")
-            speech_text = ai_service.prepare_speech_text(answer, tts_lang)
-            audio_base64 = ai_service.generate_speech(answer, language=tts_lang, speech_text=speech_text)
-        except Exception as e:
-            print(f"TTS Error: {e}")
+        if include_audio:
+            try:
+                tts_lang = (understanding or {}).get("language")
+                speech_text = ai_service.prepare_speech_text(answer, tts_lang)
+                audio_base64 = ai_service.generate_speech(answer, language=tts_lang, speech_text=speech_text)
+            except Exception as e:
+                print(f"TTS Error: {e}")
             
         return {
             "question": query_text,
@@ -702,7 +716,11 @@ def ai_query_text(payload: TextQueryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/api/ai/query-voice")
-async def ai_query_voice(file: UploadFile = File(...), history: str = Form(default="[]")):
+async def ai_query_voice(
+    file: UploadFile = File(...),
+    history: str = Form(default="[]"),
+    include_audio: str = Form(default="false"),
+):
     try:
         try:
             history_list = ai_service.trim_conversation_history(json.loads(history or "[]"))
@@ -764,15 +782,17 @@ async def ai_query_voice(file: UploadFile = File(...), history: str = Form(defau
                 understanding=understanding,
             )
             
-        # 5. Generate speech audio (romanize Urdu for TTS; display text stays Urdu)
+        # 5. Optional speech — client can call /api/ai/speak separately for faster text-first UX
+        want_audio = str(include_audio).strip().lower() in {"1", "true", "yes"}
         audio_base64 = ""
         speech_text = ""
-        try:
-            tts_lang = (understanding or {}).get("language")
-            speech_text = ai_service.prepare_speech_text(answer, tts_lang)
-            audio_base64 = ai_service.generate_speech(answer, language=tts_lang, speech_text=speech_text)
-        except Exception as e:
-            print(f"TTS Error: {e}")
+        if want_audio:
+            try:
+                tts_lang = (understanding or {}).get("language")
+                speech_text = ai_service.prepare_speech_text(answer, tts_lang)
+                audio_base64 = ai_service.generate_speech(answer, language=tts_lang, speech_text=speech_text)
+            except Exception as e:
+                print(f"TTS Error: {e}")
             
         return {
             "question": query_text,
