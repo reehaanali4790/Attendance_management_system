@@ -223,7 +223,7 @@ def understand_query(user_query: str, conversation_history: list = None) -> dict
 
 Today's date: {today.isoformat()}
 Last year: {last_year}
-Registered employees (ONLY these exist in the database):
+Registered ACTIVE employees only (inactive/former staff excluded):
 {emp_list}
 
 Your job: analyze the user's question (and conversation history for follow-ups) and return structured JSON.
@@ -238,8 +238,8 @@ CRITICAL RULES:
    resolved_question: "Bashir ne pichle saal kitni chutiyan ki?"
 
 3. GENERAL vs SPECIFIC:
-   - general: who is late/absent, sabse zyada late kaun, kitne log, ranking across all employees
-   - specific_person: question about one named employee's attendance/leaves/status
+   - general: who is late/absent, sabse zyada late kaun, sabse zyada chutiyan, kitne log, ranking across active employees
+   - specific_person: question about one named active employee's attendance/leaves/status
 
 4. EMPLOYEES: List only employees from the registered list above. Use exact Latin spellings from the list.
    NEVER output Urdu script in the employees array — only Latin/English names from the list.
@@ -405,7 +405,7 @@ def get_db_employee_names() -> list:
     try:
         with engine.connect() as conn:
             if DATABASE_URL.startswith("sqlite"):
-                sql = "SELECT name FROM employees WHERE is_active = 1 OR is_active IS NULL"
+                sql = "SELECT name FROM employees WHERE is_active = 1"
             else:
                 sql = "SELECT name FROM employees WHERE is_active IS TRUE"
             res = conn.execute(text(sql))
@@ -485,7 +485,76 @@ def transcribe_audio(audio_bytes: bytes, original_filename: str) -> str:
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
-def _build_sql_system_prompt() -> str:
+def _active_employee_predicate() -> str:
+    if DATABASE_URL.startswith("sqlite"):
+        return "employees.is_active = 1"
+    return "employees.is_active IS TRUE"
+
+def _normalize_sql_dialect(sql_query: str) -> str:
+    """Adjust SQLite-style literals for PostgreSQL when needed."""
+    if DATABASE_URL.startswith("sqlite"):
+        return sql_query
+    sql = re.sub(r"\bemployees\.is_active\s*=\s*1\b", "employees.is_active IS TRUE", sql_query, flags=re.IGNORECASE)
+    sql = re.sub(r"\bis_active\s*=\s*1\b", "is_active IS TRUE", sql, flags=re.IGNORECASE)
+    return sql
+
+def ensure_employees_join_for_attendance(sql_query: str) -> str:
+    """Ensure attendance queries join employees so active-only filter can apply."""
+    sql_lower = sql_query.lower()
+    if "daily_attendance" not in sql_lower or "employees" in sql_lower:
+        return sql_query
+
+    pattern = re.compile(
+        r"(FROM\s+daily_attendance(?:\s+(?:AS\s+)?\w+)?)",
+        re.IGNORECASE,
+    )
+    match = pattern.search(sql_query)
+    if not match:
+        return sql_query
+
+    insert_pos = match.end()
+    join_clause = " JOIN employees ON daily_attendance.employee_id = employees.id "
+    updated = sql_query[:insert_pos] + join_clause + sql_query[insert_pos:]
+    print("[SQL Active Filter] Added employees JOIN for active-only filtering")
+    return updated
+
+def ensure_active_employees_filter(sql_query: str) -> str:
+    """
+    Inject active-employee constraint when queries touch the employees table.
+    Prevents rankings/counts from including former/inactive staff.
+    """
+    if not sql_query:
+        return sql_query
+
+    sql_lower = sql_query.lower()
+    if "employees" not in sql_lower:
+        return sql_query
+
+    if re.search(r"employees\.is_active\s*(=|is)", sql_lower):
+        return sql_query
+
+    predicate = _active_employee_predicate()
+    clause_boundary = re.compile(r"\b(GROUP\s+BY|ORDER\s+BY|LIMIT|HAVING)\b", re.IGNORECASE)
+
+    if re.search(r"\bWHERE\b", sql_query, re.IGNORECASE):
+        where_match = re.search(r"\bWHERE\b", sql_query, re.IGNORECASE)
+        end_match = clause_boundary.search(sql_query, where_match.end())
+        if end_match:
+            insert_pos = end_match.start()
+            updated = sql_query[:insert_pos].rstrip() + f" AND {predicate} " + sql_query[insert_pos:]
+        else:
+            updated = sql_query.rstrip().rstrip(";") + f" AND {predicate}"
+    else:
+        end_match = clause_boundary.search(sql_query)
+        if end_match:
+            insert_pos = end_match.start()
+            updated = sql_query[:insert_pos].rstrip() + f" WHERE {predicate} " + sql_query[insert_pos:]
+        else:
+            updated = sql_query.rstrip().rstrip(";") + f" WHERE {predicate}"
+
+    print(f"[SQL Active Filter] Applied: {predicate}")
+    return updated
+
     today = datetime.date.today()
     current_year = today.year
     first_day_of_year = f"{current_year}-01-01"
@@ -561,7 +630,7 @@ Here is the SQLite schema:
    - name (VARCHAR, UNIQUE) - e.g. "Casual Leave", "Sick Leave", "Annual Leave"
    - is_paid (BOOLEAN)
 
-LIST OF ALL ACTUAL EMPLOYEES REGISTERED IN THE DATABASE:
+LIST OF ALL ACTIVE EMPLOYEES (currently employed — inactive/former staff excluded):
 {emp_list_str}
 
 Context details:
@@ -594,6 +663,7 @@ RULES FOR QUERY GENERATION:
      - "Which employee has highest work hours?" / "Sabse zyada kaam kis ne kiya?"
      For GENERAL questions: ALWAYS generate SQL. Do NOT look for an employee name. Do NOT return sql: null.
      Use JOINs, date filters, ORDER BY, LIMIT, COUNT, MAX as appropriate.
+     ONLY include currently ACTIVE employees (employees.is_active = 1). Exclude former/inactive staff.
 
    - SPECIFIC-PERSON questions name one employee and ask about their status/record.
      Examples: "Is Mohammad Omer present?", "Shehryar ne kitni chutiyan ki?"
@@ -642,6 +712,13 @@ RULES FOR QUERY GENERATION:
 6. JOINING & SELECTING FIELDS:
    - Always join `daily_attendance` with `employees` on `daily_attendance.employee_id = employees.id`.
    - Always select `employees.name` alongside counts or date details so the synthesis step knows the matched employee's exact name.
+   - ALWAYS add `AND employees.is_active = 1` (or `employees.is_active IS TRUE`) on every query that references the employees table.
+   - Rankings like "sabse zyada chutiyan/late/work hours" must only compare ACTIVE employees, never people who left the company.
+
+7. ACTIVE EMPLOYEES ONLY (CRITICAL):
+   - Company-wide counts, rankings, and "who has the most" questions apply ONLY to active staff.
+   - Inactive employees may have old attendance rows — those rows must NOT appear in rankings or "sabse zyada" answers.
+   - Unless the user explicitly asks about inactive/former/left employees, always filter `employees.is_active = 1`.
 
 8. FOLLOW-UP & CONVERSATIONAL QUESTIONS (CRITICAL):
    - When a "Resolved standalone question" is provided, ALWAYS use it for SQL generation.
@@ -681,7 +758,9 @@ def generate_sql(user_query: str, conversation_history: list = None) -> dict:
     if query_intent == "general":
         match_hint = (
             f"\nUNDERSTANDING: GENERAL question — metric={metric}, time_period={understanding.get('time_period')}. "
-            "Generate SQL across all employees. Do NOT treat conversational words as employee names. "
+            "Generate SQL across ACTIVE employees only (employees.is_active = 1). "
+            "Do NOT treat conversational words as employee names. "
+            "Exclude inactive/former staff from rankings and counts. "
             "ALWAYS return valid SQL.\n"
         )
     elif candidate_matches:
@@ -727,6 +806,11 @@ def generate_sql(user_query: str, conversation_history: list = None) -> dict:
                 result["sql"] = None
                 result["explanation"] = result.get("explanation") or "Could not resolve employee name to Latin database spelling."
 
+        if result.get("sql"):
+            normalized = _normalize_sql_dialect(result["sql"])
+            normalized = ensure_employees_join_for_attendance(normalized)
+            result["sql"] = ensure_active_employees_filter(normalized)
+
         result["candidate_matches"] = candidate_matches
         result["resolved_query"] = resolved_query if resolved_query != latin_query else None
         result["transliterated_query"] = transliterated_query
@@ -749,10 +833,13 @@ def generate_sql(user_query: str, conversation_history: list = None) -> dict:
 
 def execute_sql(sql_query: str) -> list:
     """
-    Safely executes an SQLite SELECT query and returns the list of rows as dictionaries.
+    Safely executes a SELECT query and returns the list of rows as dictionaries.
     """
     if not sql_query:
         return []
+
+    sql_query = ensure_employees_join_for_attendance(_normalize_sql_dialect(sql_query))
+    sql_query = ensure_active_employees_filter(sql_query)
         
     query_clean = sql_query.strip().lower()
     if not query_clean.startswith("select"):
@@ -875,6 +962,8 @@ def correct_chutti_sql(sql_query: str, user_query: str, metric: str = None) -> s
     )
     fixed = re.sub(r"daily_attendance\.start_date", "daily_attendance.date", fixed, flags=re.IGNORECASE)
     fixed = re.sub(r"daily_attendance\.end_date", "daily_attendance.date", fixed, flags=re.IGNORECASE)
+    fixed = ensure_employees_join_for_attendance(_normalize_sql_dialect(fixed))
+    fixed = ensure_active_employees_filter(fixed)
     if fixed != sql_query:
         print(f"[SQL Chutti Correction] leave_requests -> daily_attendance\n  Before: {sql_query}\n  After:  {fixed}")
     return fixed
@@ -915,7 +1004,8 @@ CRITICAL RULES FOR CONVERSATIONAL SYNTHESIS:
    - Speak naturally as if telling a colleague the answer verbally.
 
 2. GENERAL vs SPECIFIC QUESTIONS:
-   - For GENERAL questions (who is late, who was most late, how many absent): answer with the SQL results directly.
+   - For GENERAL questions (who is late, who was most late, sabse zyada chutiyan, how many absent): answer with the SQL results directly.
+     Results only include currently ACTIVE employees — never mention inactive/former staff for rankings.
      Name the employee(s) from the results. NEVER say "no employee named [phrase] exists" for general questions.
    - For SPECIFIC-PERSON questions only: apply the non-existent employee rule below.
 
