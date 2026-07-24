@@ -555,6 +555,7 @@ def ensure_active_employees_filter(sql_query: str) -> str:
     print(f"[SQL Active Filter] Applied: {predicate}")
     return updated
 
+def _build_sql_system_prompt() -> str:
     today = datetime.date.today()
     current_year = today.year
     first_day_of_year = f"{current_year}-01-01"
