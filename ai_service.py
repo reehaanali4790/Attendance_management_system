@@ -491,11 +491,70 @@ def _active_employee_predicate() -> str:
     return "employees.is_active IS TRUE"
 
 def _normalize_sql_dialect(sql_query: str) -> str:
-    """Adjust SQLite-style literals for PostgreSQL when needed."""
+    """Adjust SQLite-style SQL for PostgreSQL when needed."""
     if DATABASE_URL.startswith("sqlite"):
         return sql_query
-    sql = re.sub(r"\bemployees\.is_active\s*=\s*1\b", "employees.is_active IS TRUE", sql_query, flags=re.IGNORECASE)
+
+    sql = sql_query
+
+    def _convert_date_offset(match: re.Match) -> str:
+        base = match.group(1)
+        offset = match.group(2).strip().strip("'\"")
+        offset_match = re.match(r"-(\d+)\s+(day|days|month|months|year|years)", offset, re.IGNORECASE)
+        if not offset_match:
+            return match.group(0)
+        amount, unit = offset_match.group(1), offset_match.group(2).lower()
+        if unit.startswith("day"):
+            interval = f"{amount} days"
+        elif unit.startswith("month"):
+            interval = f"{amount} months"
+        else:
+            interval = f"{amount} years"
+        if base.lower() == "now":
+            return f"(CURRENT_DATE - INTERVAL '{interval}')"
+        return f"('{base}'::date - INTERVAL '{interval}')"
+
+    sql = re.sub(
+        r"date\s*\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)",
+        _convert_date_offset,
+        sql,
+        flags=re.IGNORECASE,
+    )
+    sql = re.sub(
+        r"date\s*\(\s*'now'\s*,\s*'-\s*(\d+)\s+days?'\s*\)",
+        r"(CURRENT_DATE - INTERVAL '\1 days')",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    sql = re.sub(r"date\s*\(\s*'now'\s*\)", "CURRENT_DATE", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"date\s*\(\s*'([^']+)'\s*\)", r"'\1'::date", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"datetime\s*\(\s*'now'\s*\)", "CURRENT_TIMESTAMP", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\bemployees\.is_active\s*=\s*1\b", "employees.is_active IS TRUE", sql, flags=re.IGNORECASE)
     sql = re.sub(r"\bis_active\s*=\s*1\b", "is_active IS TRUE", sql, flags=re.IGNORECASE)
+
+    # Cast bare date strings in BETWEEN comparisons when needed
+    sql = re.sub(
+        r"\bBETWEEN\s+'(\d{4}-\d{2}-\d{2})'\s+AND\s+'(\d{4}-\d{2}-\d{2})'",
+        r"BETWEEN '\1'::date AND '\2'::date",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    sql = re.sub(
+        r"(daily_attendance\.date\s*[=<>]+\s*)'(\d{4}-\d{2}-\d{2})'",
+        r"\1'\2'::date",
+        sql,
+        flags=re.IGNORECASE,
+    )
+
+    return sql
+
+def finalize_sql(sql_query: str) -> str:
+    """Apply all SQL safety normalizations before execution."""
+    if not sql_query:
+        return sql_query
+    sql = _normalize_sql_dialect(sql_query)
+    sql = ensure_employees_join_for_attendance(sql)
+    sql = ensure_active_employees_filter(sql)
     return sql
 
 def ensure_employees_join_for_attendance(sql_query: str) -> str:
@@ -567,9 +626,21 @@ def _build_sql_system_prompt() -> str:
     last_year = current_year - 1
     first_day_of_last_year = f"{last_year}-01-01"
     last_day_of_last_year = f"{last_year}-12-31"
+    last_week_start = (today - datetime.timedelta(days=7)).isoformat()
     
     db_employees = get_db_employee_names()
     emp_list_str = "\n".join([f"- {name}" for name in db_employees]) if db_employees else "- Mohammad Omer\n- Shaharyar\n- Ali\n- Ahmed"
+    
+    is_postgres = not DATABASE_URL.startswith("sqlite")
+    db_label = "PostgreSQL" if is_postgres else "SQLite"
+    date_fn_yesterday = (
+        f"(CURRENT_DATE - INTERVAL '1 day')" if is_postgres
+        else f"date('{today.isoformat()}', '-1 day')"
+    )
+    date_fn_last_week = (
+        f"(CURRENT_DATE - INTERVAL '7 days')" if is_postgres
+        else f"date('{today.isoformat()}', '-7 days')"
+    )
     
     date_context = (
         f"Today's date: {today.isoformat()} ({today.strftime('%A')})\n"
@@ -577,12 +648,24 @@ def _build_sql_system_prompt() -> str:
         f"First day of current month ('this month' / 'is mahine'): {first_day_of_month.isoformat()}\n"
         f"Last month range ('last month' / 'pichle mahine'): {first_day_of_last_month.isoformat()} to {last_month_end.isoformat()}\n"
         f"Last year range ('last year' / 'pichle saal' / 'pichlay saal'): {first_day_of_last_year} to {last_day_of_last_year}\n"
+        f"Last week range ('last week' / 'pichle hafte' / 'pichlay hafte'): {last_week_start} to {today.isoformat()}\n"
     )
     
-    return f"""You are a senior SQLite database expert for an employee attendance management system.
-Your job is to translate natural language questions (asked in English, Urdu script, or Roman Urdu) into a valid SQLite SELECT query.
+    date_syntax_rules = (
+        "10. DATE SYNTAX (PostgreSQL — CRITICAL):\n"
+        "   - NEVER use SQLite date('YYYY-MM-DD', '-7 days').\n"
+        "   - Use: (CURRENT_DATE - INTERVAL '7 days') for relative dates.\n"
+        "   - Use: 'YYYY-MM-DD'::date for fixed dates.\n"
+        "   - Example last week: daily_attendance.date BETWEEN (CURRENT_DATE - INTERVAL '7 days') AND CURRENT_DATE\n"
+        if is_postgres else
+        "10. DATE SYNTAX (SQLite):\n"
+        "   - Use date('YYYY-MM-DD', '-7 days') for relative dates.\n"
+    )
+    
+    return f"""You are a senior {db_label} database expert for an employee attendance management system.
+Your job is to translate natural language questions (asked in English, Urdu script, or Roman Urdu) into a valid {db_label} SELECT query.
 
-Here is the SQLite schema:
+Here is the {db_label} schema:
 
 1. Table: employees
    - id (INTEGER, PRIMARY KEY)
@@ -686,10 +769,13 @@ RULES FOR QUERY GENERATION:
      `SELECT COUNT(*) ... WHERE status = 'Late' AND date = today`
 
 7. MULTILINGUAL & ROMAN URDU VOCABULARY MAPPING:
-   - "chutiyan" / "chutti" / "chuti" / "chhuttiyan" / "gair hazir" / "absent" / "leaves" / "off":
-     ALWAYS count from `daily_attendance` with `status IN ('Absent', 'On Leave')`.
+   - "chutiyan" / "chutti" / "chuti" / "chhutti" / "chhuttiyan" / "chhutiyan" / "chhuti" / "off":
+     ALWAYS means days off from attendance records. Count from `daily_attendance` with `status IN ('Absent', 'On Leave')`.
+     NEVER use only 'Absent' or only 'On Leave' for chutti/chhuti questions — always BOTH.
      Do NOT use `leave_requests` for chutti/chutiyan counts — that table is often empty; real absence data lives in `daily_attendance`.
      Example: `SELECT COUNT(*) FROM daily_attendance JOIN employees ON daily_attendance.employee_id = employees.id WHERE employees.name = 'Mohammad Omer' AND daily_attendance.status IN ('Absent', 'On Leave') AND daily_attendance.date BETWEEN '{first_day_of_last_year}' AND '{last_day_of_last_year}'`
+   - "gair hazir" / "absent" (WITHOUT chutti/chhuti words):
+     Usually means not present. Query `daily_attendance.status IN ('Absent', 'On Leave')` unless user clearly means only unapproved absence.
    - "haazri" / "hazri" / "present" / "aaya" / "aaye" / "attendance":
      Refers to presence. Query `daily_attendance.status IN ('Present', 'Late')`.
    - "der" / "late" / "der se aaya" / "sabse zyada late" / "sab se zyada late":
@@ -708,9 +794,13 @@ RULES FOR QUERY GENERATION:
    - "aaj" / "today":
      `daily_attendance.date = '{today.isoformat()}'`.
    - "kal" / "yesterday":
-     `daily_attendance.date = date('{today.isoformat()}', '-1 day')`.
+     `daily_attendance.date = {date_fn_yesterday}`.
+   - "pichle hafte" / "pichlay hafte" / "last week":
+     `daily_attendance.date BETWEEN {date_fn_last_week} AND '{today.isoformat()}'`.
 
-6. JOINING & SELECTING FIELDS:
+{date_syntax_rules}
+
+11. JOINING & SELECTING FIELDS:
    - Always join `daily_attendance` with `employees` on `daily_attendance.employee_id = employees.id`.
    - Always select `employees.name` alongside counts or date details so the synthesis step knows the matched employee's exact name.
    - ALWAYS add `AND employees.is_active = 1` (or `employees.is_active IS TRUE`) on every query that references the employees table.
@@ -808,9 +898,7 @@ def generate_sql(user_query: str, conversation_history: list = None) -> dict:
                 result["explanation"] = result.get("explanation") or "Could not resolve employee name to Latin database spelling."
 
         if result.get("sql"):
-            normalized = _normalize_sql_dialect(result["sql"])
-            normalized = ensure_employees_join_for_attendance(normalized)
-            result["sql"] = ensure_active_employees_filter(normalized)
+            result["sql"] = finalize_sql(result["sql"])
 
         result["candidate_matches"] = candidate_matches
         result["resolved_query"] = resolved_query if resolved_query != latin_query else None
@@ -839,8 +927,7 @@ def execute_sql(sql_query: str) -> list:
     if not sql_query:
         return []
 
-    sql_query = ensure_employees_join_for_attendance(_normalize_sql_dialect(sql_query))
-    sql_query = ensure_active_employees_filter(sql_query)
+    sql_query = finalize_sql(sql_query)
         
     query_clean = sql_query.strip().lower()
     if not query_clean.startswith("select"):
@@ -850,13 +937,24 @@ def execute_sql(sql_query: str) -> list:
     for keyword in forbidden:
         if re.search(r'\b' + keyword + r'\b', query_clean):
             raise ValueError(f"Unauthorized keyword '{keyword}' found in SQL query.")
-            
+
+    try:
+        return _execute_sql_rows(sql_query)
+    except Exception as first_error:
+        repaired = finalize_sql(_normalize_sql_dialect(sql_query))
+        if repaired != sql_query:
+            print(f"[SQL Retry] {first_error}\n  Retrying: {repaired}")
+            try:
+                return _execute_sql_rows(repaired)
+            except Exception:
+                pass
+        raise first_error
+
+def _execute_sql_rows(sql_query: str) -> list:
     with engine.connect() as conn:
         result = conn.execute(text(sql_query))
         columns = result.keys()
-        rows = [dict(zip(columns, row)) for row in result.fetchall()]
-        
-    return rows
+        return [dict(zip(columns, row)) for row in result.fetchall()]
 
 def trim_conversation_history(history: list, max_messages: int = 10) -> list:
     """Keep the most recent conversation turns for context."""
@@ -936,37 +1034,58 @@ def _extract_scalar_count(query_results: list):
 def _is_leave_count_question(user_query: str) -> bool:
     q = (user_query or "").lower()
     markers = [
-        "chutti", "chutiyan", "chhutti", "chhuttiyan", "chhutiyan", "leave", "leaves", "gair hazir",
-        "چھٹی", "چھٹیاں", "چھوٹیاں", "چھٹیوں", "چھٹي", "چھٹیاں",
+        "chutti", "chutiyan", "chhutti", "chhuttiyan", "chhutiyan", "chhuti", "chhutti",
+        "chuti", "chuttiyan", "leave", "leaves",
+        "چھٹی", "چھٹیاں", "چھوٹیاں", "چھٹیوں", "چھٹي",
     ]
     return any(m in q for m in markers)
 
 def correct_chutti_sql(sql_query: str, user_query: str, metric: str = None) -> str:
     """
-    Rewrites leave_requests-based chutti counts to daily_attendance,
-    where actual absence/leave records are stored.
+    Rewrites leave/chutti SQL to use daily_attendance with correct status filters.
     """
     is_leave = metric == "leaves" or _is_leave_count_question(user_query)
-    if not sql_query or not is_leave:
-        return sql_query
-    if "leave_requests" not in sql_query.lower():
+    if not sql_query:
         return sql_query
 
     fixed = sql_query
-    fixed = re.sub(r"\bFROM\s+leave_requests\b", "FROM daily_attendance", fixed, flags=re.IGNORECASE)
-    fixed = re.sub(r"\bleave_requests\.", "daily_attendance.", fixed, flags=re.IGNORECASE)
-    fixed = re.sub(
-        r"daily_attendance\.status\s*=\s*['\"]Approved['\"]",
-        "daily_attendance.status IN ('Absent', 'On Leave')",
-        fixed,
-        flags=re.IGNORECASE,
-    )
-    fixed = re.sub(r"daily_attendance\.start_date", "daily_attendance.date", fixed, flags=re.IGNORECASE)
-    fixed = re.sub(r"daily_attendance\.end_date", "daily_attendance.date", fixed, flags=re.IGNORECASE)
-    fixed = ensure_employees_join_for_attendance(_normalize_sql_dialect(fixed))
-    fixed = ensure_active_employees_filter(fixed)
+    if is_leave and "leave_requests" in fixed.lower():
+        fixed = re.sub(r"\bFROM\s+leave_requests\b", "FROM daily_attendance", fixed, flags=re.IGNORECASE)
+        fixed = re.sub(r"\bleave_requests\.", "daily_attendance.", fixed, flags=re.IGNORECASE)
+        fixed = re.sub(
+            r"daily_attendance\.status\s*=\s*['\"]Approved['\"]",
+            "daily_attendance.status IN ('Absent', 'On Leave')",
+            fixed,
+            flags=re.IGNORECASE,
+        )
+        fixed = re.sub(r"daily_attendance\.start_date", "daily_attendance.date", fixed, flags=re.IGNORECASE)
+        fixed = re.sub(r"daily_attendance\.end_date", "daily_attendance.date", fixed, flags=re.IGNORECASE)
+
+    if is_leave:
+        fixed = re.sub(
+            r"daily_attendance\.status\s*=\s*'Absent'",
+            "daily_attendance.status IN ('Absent', 'On Leave')",
+            fixed,
+            flags=re.IGNORECASE,
+        )
+        fixed = re.sub(
+            r"daily_attendance\.status\s*=\s*'On Leave'",
+            "daily_attendance.status IN ('Absent', 'On Leave')",
+            fixed,
+            flags=re.IGNORECASE,
+        )
+        if "daily_attendance.status" not in fixed.lower() and "count(" in fixed.lower():
+            fixed = re.sub(
+                r"(WHERE\s+)",
+                r"\1daily_attendance.status IN ('Absent', 'On Leave') AND ",
+                fixed,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+
+    fixed = finalize_sql(fixed)
     if fixed != sql_query:
-        print(f"[SQL Chutti Correction] leave_requests -> daily_attendance\n  Before: {sql_query}\n  After:  {fixed}")
+        print(f"[SQL Chutti Correction]\n  Before: {sql_query}\n  After:  {fixed}")
     return fixed
 
 def synthesize_answer(
