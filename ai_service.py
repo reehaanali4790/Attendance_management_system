@@ -5,6 +5,8 @@ import datetime
 import json
 import re
 import difflib
+import hashlib
+import time
 from sqlalchemy import text
 from database import engine, DATABASE_URL
 from dotenv import load_dotenv
@@ -20,6 +22,10 @@ OPENAI_WHISPER_MODEL = "whisper-1"
 
 _employee_names_cache = {"names": [], "fetched_at": 0.0}
 _EMPLOYEE_CACHE_TTL_SECONDS = 60
+
+_tts_audio_cache = {}
+_TTS_CACHE_MAX_ENTRIES = 200
+_TTS_CACHE_TTL_SECONDS = 86400
 
 
 def get_chat_model(fast: bool = False) -> str:
@@ -382,6 +388,51 @@ def transliterate_query_to_latin(user_query: str) -> str:
 def get_openai_tts_model() -> str:
     return os.environ.get("OPENAI_TTS_MODEL", "tts-1").strip().lower()
 
+
+def _tts_cache_key(speech_text: str, voice: str, model: str) -> str:
+    payload = f"{model}|{voice}|{speech_text.strip()}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _get_cached_tts(cache_key: str) -> str | None:
+    entry = _tts_audio_cache.get(cache_key)
+    if not entry:
+        return None
+    audio_b64, fetched_at = entry
+    if (time.time() - fetched_at) > _TTS_CACHE_TTL_SECONDS:
+        _tts_audio_cache.pop(cache_key, None)
+        return None
+    return audio_b64
+
+
+def _set_cached_tts(cache_key: str, audio_b64: str) -> None:
+    if len(_tts_audio_cache) >= _TTS_CACHE_MAX_ENTRIES:
+        oldest_key = min(_tts_audio_cache, key=lambda key: _tts_audio_cache[key][1])
+        _tts_audio_cache.pop(oldest_key, None)
+    _tts_audio_cache[cache_key] = (audio_b64, time.time())
+
+
+def attach_audio_to_result(result: dict) -> dict:
+    """Generate TTS once per query response (uses cache). Does not change answer text."""
+    if not isinstance(result, dict):
+        return result
+    if result.get("audio"):
+        return result
+
+    answer = (result.get("answer") or "").strip()
+    if not answer:
+        return result
+
+    try:
+        understanding = result.get("understanding") or {}
+        tts_lang = understanding.get("language")
+        speech_text = prepare_speech_text(answer, tts_lang)
+        result["speech_text"] = speech_text
+        result["audio"] = generate_speech(answer, language=tts_lang, speech_text=speech_text)
+    except Exception as exc:
+        print(f"[attach_audio] {exc}")
+    return result
+
 def get_openai_client() -> openai.OpenAI:
     """
     Returns an OpenAI client instance using OPENAI_API_KEY.
@@ -485,6 +536,142 @@ def transcribe_audio(audio_bytes: bytes, original_filename: str) -> str:
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
+def _inactive_employee_predicate() -> str:
+    if DATABASE_URL.startswith("sqlite"):
+        return "employees.is_active = 0"
+    return "employees.is_active IS FALSE"
+
+def _sql_targets_inactive_employees(sql_query: str) -> bool:
+    sql_lower = (sql_query or "").lower()
+    inactive_markers = (
+        r"is_active\s*=\s*0",
+        r"is_active\s*=\s*false",
+        r"is_active\s+is\s+false",
+        r"employees\.is_active\s*=\s*0",
+        r"employees\.is_active\s*=\s*false",
+        r"employees\.is_active\s+is\s+false",
+    )
+    return any(re.search(pattern, sql_lower) for pattern in inactive_markers)
+
+def _strip_contradictory_active_filters(sql_query: str) -> str:
+    if not _sql_targets_inactive_employees(sql_query):
+        return sql_query
+    cleaned = sql_query
+    for pattern, replacement in (
+        (r"\s+AND\s+employees\.is_active\s+IS\s+TRUE\b", ""),
+        (r"\s+AND\s+is_active\s+IS\s+TRUE\b", ""),
+        (r"\s+AND\s+employees\.is_active\s*=\s*1\b", ""),
+        (r"\s+AND\s+is_active\s*=\s*1\b", ""),
+        (r"\bWHERE\s+employees\.is_active\s+IS\s+TRUE\s+AND\s+", "WHERE "),
+        (r"\bWHERE\s+is_active\s+IS\s+TRUE\s+AND\s+", "WHERE "),
+        (r"\bWHERE\s+employees\.is_active\s+IS\s+TRUE\s*$", ""),
+        (r"\bWHERE\s+is_active\s+IS\s+TRUE\s*$", ""),
+    ):
+        cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
+    return cleaned.strip()
+
+def friendly_user_error(user_query: str, understanding: dict = None, reason: str = "unknown") -> str:
+    """Return a natural, user-facing message — never expose SQL/DB internals."""
+    lang = (understanding or {}).get("language") or detect_query_language(user_query or "")
+    if lang == "urdu_script":
+        messages = {
+            "database": "معذرت، اس سوال کا جواب نکالتے وقت کوئی مسئلہ آ گیا۔ براہ کرم سوال دوسرے الفاظ میں دوبارہ پوچھیں۔",
+            "understand": "معذرت، مجھے آپ کا سوال سمجھ نہیں آیا۔ براہ کرم اسے دوسرے انداز میں پوچھیں۔",
+            "default": "معذرت، میں ابھی یہ نہیں سمجھ سکا۔ تھوڑا سا مختلف انداز میں دوبارہ کوشش کریں۔",
+        }
+    elif lang == "roman_urdu":
+        messages = {
+            "database": "Maazrat, is sawaal ka jawab nikalte waqt koi masla aa gaya. Barah-e-karam sawaal ko doosray lafzon mein dobara poochein.",
+            "understand": "Mujhe aap ka sawaal samajh nahi aaya. Barah-e-karam isko doosray andaaz mein phir se poochein.",
+            "default": "Maazrat, main abhi yeh samajh nahi saka. Thora alag andaaz mein dobara koshish karein.",
+        }
+    else:
+        messages = {
+            "database": "Sorry, I had trouble fetching that answer. Please try asking in a slightly different way.",
+            "understand": "I didn't quite understand that. Please try rephrasing your question.",
+            "default": "Sorry, I couldn't process that right now. Please try again in a different way.",
+        }
+    return messages.get(reason, messages["default"])
+
+def process_user_query(query_text: str, conversation_history: list = None) -> dict:
+    """End-to-end AI query pipeline with safe user-facing errors."""
+    history = trim_conversation_history(conversation_history or [])
+    understanding = {}
+    sql_info = {}
+    try:
+        sql_info = generate_sql(query_text, conversation_history=history)
+        understanding = sql_info.get("understanding") or {}
+        sql_query = sql_info.get("sql")
+        explanation = sql_info.get("explanation", "")
+        query_intent = sql_info.get("query_intent", "specific_person")
+
+        if sql_query:
+            effective_text = sql_info.get("resolved_query") or query_text
+            sql_query = correct_chutti_sql(
+                sql_query, effective_text, metric=understanding.get("metric")
+            )
+
+        query_results = []
+        error_msg = None
+        if sql_query:
+            try:
+                query_results = execute_sql(sql_query)
+            except Exception as exc:
+                print(f"[SQL Execution Error] {exc}")
+                error_msg = str(exc)
+                sql_query = None
+
+        if not sql_query and error_msg:
+            answer = friendly_user_error(query_text, understanding, reason="database")
+        elif not sql_query:
+            answer = friendly_user_error(query_text, understanding, reason="understand")
+            if explanation and len(explanation) < 120 and "sql" not in explanation.lower():
+                pass  # keep friendly message only
+        else:
+            answer = synthesize_answer(
+                query_text,
+                query_results,
+                sql_query,
+                query_intent,
+                candidate_matches=sql_info.get("candidate_matches", []),
+                conversation_history=history,
+                resolved_query=sql_info.get("resolved_query"),
+                understanding=understanding,
+            )
+
+        return {
+            "question": query_text,
+            "sql": sql_query,
+            "answer": answer,
+            "audio": "",
+            "speech_text": "",
+            "explanation": explanation,
+            "candidate_matches": sql_info.get("candidate_matches", []),
+            "transliterated_query": sql_info.get("transliterated_query"),
+            "match_hint": sql_info.get("match_hint"),
+            "query_intent": query_intent,
+            "resolved_query": sql_info.get("resolved_query"),
+            "understanding": understanding,
+            "query_results": query_results,
+        }
+    except Exception as exc:
+        print(f"[AI Query Error] {exc}")
+        return {
+            "question": query_text,
+            "sql": None,
+            "answer": friendly_user_error(query_text, understanding, reason="default"),
+            "audio": "",
+            "speech_text": "",
+            "explanation": "",
+            "candidate_matches": sql_info.get("candidate_matches", []),
+            "transliterated_query": sql_info.get("transliterated_query"),
+            "match_hint": sql_info.get("match_hint"),
+            "query_intent": sql_info.get("query_intent", "specific_person"),
+            "resolved_query": sql_info.get("resolved_query"),
+            "understanding": understanding,
+            "query_results": [],
+        }
+
 def _active_employee_predicate() -> str:
     if DATABASE_URL.startswith("sqlite"):
         return "employees.is_active = 1"
@@ -531,6 +718,10 @@ def _normalize_sql_dialect(sql_query: str) -> str:
     sql = re.sub(r"datetime\s*\(\s*'now'\s*\)", "CURRENT_TIMESTAMP", sql, flags=re.IGNORECASE)
     sql = re.sub(r"\bemployees\.is_active\s*=\s*1\b", "employees.is_active IS TRUE", sql, flags=re.IGNORECASE)
     sql = re.sub(r"\bis_active\s*=\s*1\b", "is_active IS TRUE", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\bemployees\.is_active\s*=\s*0\b", "employees.is_active IS FALSE", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\bis_active\s*=\s*0\b", "is_active IS FALSE", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\bemployees\.is_active\s*=\s*false\b", "employees.is_active IS FALSE", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\bis_active\s*=\s*false\b", "is_active IS FALSE", sql, flags=re.IGNORECASE)
 
     # Cast bare date strings in BETWEEN comparisons when needed
     sql = re.sub(
@@ -553,6 +744,9 @@ def finalize_sql(sql_query: str) -> str:
     if not sql_query:
         return sql_query
     sql = _normalize_sql_dialect(sql_query)
+    sql = _strip_contradictory_active_filters(sql)
+    if _sql_targets_inactive_employees(sql):
+        return sql
     sql = ensure_employees_join_for_attendance(sql)
     sql = ensure_active_employees_filter(sql)
     return sql
@@ -589,8 +783,11 @@ def ensure_active_employees_filter(sql_query: str) -> str:
     if "employees" not in sql_lower:
         return sql_query
 
-    if re.search(r"employees\.is_active\s*(=|is)", sql_lower):
-        return sql_query
+    if _sql_targets_inactive_employees(sql_query):
+        return _strip_contradictory_active_filters(sql_query)
+
+    if re.search(r"\b(employees\.)?is_active\s*(=|is)", sql_lower):
+        return _strip_contradictory_active_filters(sql_query)
 
     predicate = _active_employee_predicate()
     clause_boundary = re.compile(r"\b(GROUP\s+BY|ORDER\s+BY|LIMIT|HAVING)\b", re.IGNORECASE)
@@ -811,7 +1008,13 @@ RULES FOR QUERY GENERATION:
    - Inactive employees may have old attendance rows — those rows must NOT appear in rankings or "sabse zyada" answers.
    - Unless the user explicitly asks about inactive/former/left employees, always filter `employees.is_active = 1`.
 
-8. FOLLOW-UP & CONVERSATIONAL QUESTIONS (CRITICAL):
+8. INACTIVE / FORMER EMPLOYEES (when user asks explicitly):
+   - Phrases like "jo ab kaam nahi karte", "inactive", "left company", "former staff", "purane employees":
+     Use ONLY `employees.is_active IS FALSE` (PostgreSQL) or `employees.is_active = 0` (SQLite).
+   - NEVER combine inactive filter with active filter in the same query.
+   - Example: `SELECT COUNT(*) FROM employees WHERE employees.is_active IS FALSE`
+
+9. FOLLOW-UP & CONVERSATIONAL QUESTIONS (CRITICAL):
    - When a "Resolved standalone question" is provided, ALWAYS use it for SQL generation.
    - Follow-up fillers are NEVER employee names: acha/achha/okay/ok, aur/or, pichle/pichlay/pichla, thi/tha/the, saal, mahine.
    - Example: "acha aur pichle saal kitni thi?" after asking about Bashir -> resolved to "Bashir ne pichle saal kitni chutiyan ki?" -> generate SQL for Bashir last year.
@@ -1191,9 +1394,9 @@ def prepare_speech_text(text: str, language: str = None) -> str:
         return text or ""
 
     has_urdu_script = any("\u0600" <= c <= "\u06FF" for c in text)
-    lang = language or detect_query_language(text)
 
-    if not has_urdu_script and lang == "english":
+    # Roman Urdu / English answers are already speakable — skip an extra LLM call.
+    if not has_urdu_script:
         return text.strip()
 
     db_names = get_db_employee_names()
@@ -1202,7 +1405,7 @@ def prepare_speech_text(text: str, language: str = None) -> str:
     try:
         client = get_openai_client()
         response = client.chat.completions.create(
-            model=get_chat_model(),
+            model=get_chat_model(fast=True),
             messages=[
                 {
                     "role": "system",
@@ -1256,6 +1459,11 @@ def generate_speech(text: str, voice_override: str = None, language: str = None,
         voice = "sage"
         
     tts_model = get_openai_tts_model()
+    cache_key = _tts_cache_key(speech_text, voice, tts_model)
+    cached_audio = _get_cached_tts(cache_key)
+    if cached_audio:
+        print(f"[TTS Cache] hit ({len(speech_text)} chars)")
+        return cached_audio
     
     try:
         response = client.audio.speech.create(
@@ -1265,7 +1473,9 @@ def generate_speech(text: str, voice_override: str = None, language: str = None,
             speed=0.95,
         )
         audio_bytes = response.content
-        return base64.b64encode(audio_bytes).decode("utf-8")
+        audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+        _set_cached_tts(cache_key, audio_b64)
+        return audio_b64
     except Exception as e:
         print(f"[OpenAI TTS Error] {e}")
         raise RuntimeError(f"OpenAI TTS audio generation failed: {e}")

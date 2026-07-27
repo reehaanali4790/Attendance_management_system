@@ -646,74 +646,28 @@ def ai_speak(payload: SpeakRequest):
 @router.post("/api/ai/query-text")
 def ai_query_text(payload: TextQueryRequest, include_audio: bool = Query(default=False)):
     try:
-        query_text = payload.query
         history = ai_service.trim_conversation_history(
             [{"role": m.role, "content": m.content} for m in (payload.history or [])]
         )
-        # 1. Translate NL to SQL
-        sql_info = ai_service.generate_sql(query_text, conversation_history=history)
-        sql_query = sql_info.get("sql")
-        explanation = sql_info.get("explanation", "")
-        query_intent = sql_info.get("query_intent", "specific_person")
-        understanding = sql_info.get("understanding") or {}
-        if sql_query:
-            effective_text = sql_info.get("resolved_query") or query_text
-            sql_query = ai_service.correct_chutti_sql(
-                sql_query, effective_text, metric=understanding.get("metric")
-            )
-        
-        # 2. Execute SQL
-        query_results = []
-        error_msg = None
-        if sql_query:
-            try:
-                query_results = ai_service.execute_sql(sql_query)
-            except Exception as e:
-                error_msg = str(e)
-                sql_query = None  # mark as failed
-                
-        # 3. Synthesize response
-        if not sql_query and error_msg:
-            answer = f"Sorry, I ran into a database error while executing the query. Error details: {error_msg}"
-        elif not sql_query:
-            answer = explanation or "I'm sorry, I couldn't translate that question into a database query."
-        else:
-            answer = ai_service.synthesize_answer(
-                query_text, query_results, sql_query, query_intent,
-                candidate_matches=sql_info.get("candidate_matches", []),
-                conversation_history=history,
-                resolved_query=sql_info.get("resolved_query"),
-                understanding=understanding,
-            )
-            
-        # 4. Generate speech audio (optional — mobile fetches via /api/ai/speak for faster text-first UX)
-        audio_base64 = ""
-        speech_text = ""
+        result = ai_service.process_user_query(payload.query, conversation_history=history)
+
         if include_audio:
-            try:
-                tts_lang = (understanding or {}).get("language")
-                speech_text = ai_service.prepare_speech_text(answer, tts_lang)
-                audio_base64 = ai_service.generate_speech(answer, language=tts_lang, speech_text=speech_text)
-            except Exception as e:
-                print(f"TTS Error: {e}")
-            
-        return {
-            "question": query_text,
-            "sql": sql_query,
-            "answer": answer,
-            "audio": audio_base64,
-            "speech_text": speech_text,
-            "explanation": explanation,
-            "candidate_matches": sql_info.get("candidate_matches", []),
-            "transliterated_query": sql_info.get("transliterated_query"),
-            "match_hint": sql_info.get("match_hint"),
-            "query_intent": query_intent,
-            "resolved_query": sql_info.get("resolved_query"),
-            "understanding": understanding,
-            "query_results": query_results,
-        }
+            ai_service.attach_audio_to_result(result)
+
+        return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[query-text error] {e}")
+        return {
+            "question": payload.query,
+            "sql": None,
+            "answer": ai_service.friendly_user_error(payload.query, reason="default"),
+            "audio": "",
+            "speech_text": "",
+            "explanation": "",
+            "candidate_matches": [],
+            "query_results": [],
+            "understanding": {"language": ai_service.detect_query_language(payload.query)},
+        }
 
 @router.post("/api/ai/query-voice")
 async def ai_query_voice(
@@ -746,68 +700,23 @@ async def ai_query_voice(
                 "audio": audio_base64
             }
             
-        # 2. Translate NL to SQL
-        sql_info = ai_service.generate_sql(query_text, conversation_history=history_list)
-        sql_query = sql_info.get("sql")
-        explanation = sql_info.get("explanation", "")
-        query_intent = sql_info.get("query_intent", "specific_person")
-        understanding = sql_info.get("understanding") or {}
-        if sql_query:
-            effective_text = sql_info.get("resolved_query") or query_text
-            sql_query = ai_service.correct_chutti_sql(
-                sql_query, effective_text, metric=understanding.get("metric")
-            )
-        
-        # 3. Execute SQL
-        query_results = []
-        error_msg = None
-        if sql_query:
-            try:
-                query_results = ai_service.execute_sql(sql_query)
-            except Exception as e:
-                error_msg = str(e)
-                sql_query = None  # mark as failed
-                
-        # 4. Synthesize response
-        if not sql_query and error_msg:
-            answer = f"Sorry, I ran into a database error while executing the query. Error details: {error_msg}"
-        elif not sql_query:
-            answer = explanation or "I'm sorry, I couldn't translate that question into a database query."
-        else:
-            answer = ai_service.synthesize_answer(
-                query_text, query_results, sql_query, query_intent,
-                candidate_matches=sql_info.get("candidate_matches", []),
-                conversation_history=history_list,
-                resolved_query=sql_info.get("resolved_query"),
-                understanding=understanding,
-            )
-            
-        # 5. Optional speech — client can call /api/ai/speak separately for faster text-first UX
-        want_audio = str(include_audio).strip().lower() in {"1", "true", "yes"}
-        audio_base64 = ""
-        speech_text = ""
-        if want_audio:
-            try:
-                tts_lang = (understanding or {}).get("language")
-                speech_text = ai_service.prepare_speech_text(answer, tts_lang)
-                audio_base64 = ai_service.generate_speech(answer, language=tts_lang, speech_text=speech_text)
-            except Exception as e:
-                print(f"TTS Error: {e}")
-            
-        return {
-            "question": query_text,
-            "sql": sql_query,
-            "answer": answer,
-            "audio": audio_base64,
-            "speech_text": speech_text,
-            "explanation": explanation,
-            "candidate_matches": sql_info.get("candidate_matches", []),
-            "transliterated_query": sql_info.get("transliterated_query"),
-            "match_hint": sql_info.get("match_hint"),
-            "query_intent": query_intent,
-            "resolved_query": sql_info.get("resolved_query"),
-            "understanding": understanding,
-            "query_results": query_results,
-        }
+        # 2. Run full AI pipeline
+        result = ai_service.process_user_query(query_text, conversation_history=history_list)
+
+        if want_audio := str(include_audio).strip().lower() in {"1", "true", "yes"}:
+            ai_service.attach_audio_to_result(result)
+
+        return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[query-voice error] {e}")
+        return {
+            "question": "Voice Question",
+            "sql": None,
+            "answer": ai_service.friendly_user_error("", reason="default"),
+            "audio": "",
+            "speech_text": "",
+            "explanation": "",
+            "candidate_matches": [],
+            "query_results": [],
+            "understanding": {},
+        }
