@@ -1,11 +1,18 @@
 import datetime
-from sqlalchemy import func
+import time
+import logging
+from sqlalchemy import func, text
+from sqlalchemy.exc import OperationalError, IntegrityError
 from sqlalchemy.orm import Session
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from models import DeviceSettings, Employee, Shift, AttendanceLog, DailyAttendance, LeaveRequest, LeaveType, Department
 from zk_service import ZKService
-import logging
+from database import DATABASE_URL
 
 logger = logging.getLogger("SyncService")
+
+LOG_INSERT_BATCH = 500
+ATTENDANCE_COMMIT_BATCH = 150
 
 DEFAULT_LEAVE_TYPES = [
     {"name": "Sick Leave", "description": "Medical or health-related absence", "is_paid": True},
@@ -19,6 +26,110 @@ ATTENDANCE_STATUSES = {"Present", "Late", "Absent", "Left Early", "Half Day", "O
 
 
 class SyncService:
+    @staticmethod
+    def _safe_commit(db: Session, retries: int = 3) -> None:
+        for attempt in range(retries):
+            try:
+                db.commit()
+                return
+            except OperationalError as exc:
+                db.rollback()
+                if attempt >= retries - 1:
+                    raise
+                wait = 2 ** attempt
+                logger.warning(f"DB commit failed (attempt {attempt + 1}/{retries}): {exc}. Retrying in {wait}s...")
+                time.sleep(wait)
+
+    @staticmethod
+    def _recalc_date_range(db: Session, full_recalc: bool, manual_full: bool = False):
+        today = datetime.date.today()
+        if not full_recalc:
+            return today - datetime.timedelta(days=1), today
+
+        if manual_full:
+            min_log_ts = db.query(func.min(AttendanceLog.timestamp)).scalar()
+            start_date = min_log_ts.date() if min_log_ts else today.replace(day=1)
+            return start_date, today
+
+        # Automatic full sync (first run): current month only — avoids multi-year recalcs.
+        return today.replace(day=1), today
+
+    @staticmethod
+    def _import_attendance_logs(db: Session, zk_logs: list, log_cutoff: datetime.datetime | None) -> int:
+        status_map = {0: "Check Out", 1: "Check In", 2: "Break Out", 3: "Break In"}
+        use_upsert = log_cutoff is None
+
+        existing_timestamps = None
+        if not use_upsert:
+            existing_timestamps = set(
+                db.query(AttendanceLog.user_id, AttendanceLog.timestamp).filter(
+                    AttendanceLog.timestamp >= log_cutoff
+                ).all()
+            )
+
+        batch = []
+        new_logs_added = 0
+
+        for zk_log in zk_logs:
+            ts = zk_log.timestamp.replace(microsecond=0)
+            user_id = str(zk_log.user_id)
+            if existing_timestamps is not None and (user_id, ts) in existing_timestamps:
+                continue
+
+            punch_type = status_map.get(zk_log.status, "Check In" if zk_log.status % 2 != 0 else "Check Out")
+            batch.append({
+                "user_id": user_id,
+                "timestamp": ts,
+                "punch_type": punch_type,
+                "status_code": zk_log.status,
+            })
+
+            if len(batch) >= LOG_INSERT_BATCH:
+                new_logs_added += SyncService._flush_attendance_log_batch(db, batch, use_upsert)
+                batch = []
+
+        if batch:
+            new_logs_added += SyncService._flush_attendance_log_batch(db, batch, use_upsert)
+
+        return new_logs_added
+
+    @staticmethod
+    def _flush_attendance_log_batch(db: Session, batch: list, use_upsert: bool) -> int:
+        if not batch:
+            return 0
+
+        if use_upsert and not DATABASE_URL.startswith("sqlite"):
+            stmt = pg_insert(AttendanceLog).values(batch)
+            stmt = stmt.on_conflict_do_nothing(constraint="_user_timestamp_uc")
+            result = db.execute(stmt)
+            SyncService._safe_commit(db)
+            return result.rowcount or 0
+
+        if use_upsert and DATABASE_URL.startswith("sqlite"):
+            result = db.execute(
+                text(
+                    "INSERT OR IGNORE INTO attendance_logs "
+                    "(user_id, timestamp, punch_type, status_code) "
+                    "VALUES (:user_id, :timestamp, :punch_type, :status_code)"
+                ),
+                batch,
+            )
+            SyncService._safe_commit(db)
+            return result.rowcount or 0
+
+        inserted = 0
+        for row in batch:
+            try:
+                with db.begin_nested():
+                    db.add(AttendanceLog(**row))
+                    inserted += 1
+            except IntegrityError:
+                continue
+
+        if inserted:
+            SyncService._safe_commit(db)
+        return inserted
+
     @staticmethod
     def initialize_defaults(db: Session):
         """Ensure default device settings, shift, and leave types exist in the DB."""
@@ -117,7 +228,7 @@ class SyncService:
         return daily_rec
 
     @classmethod
-    def sync(cls, db: Session, full_recalc: bool = False) -> dict:
+    def sync(cls, db: Session, full_recalc: bool = False, manual_full: bool = False) -> dict:
         """Synchronize users and new device punches, then recalculate daily attendance.
 
         Regular sync (full_recalc=False):
@@ -125,8 +236,8 @@ class SyncService:
           - Recalculates daily attendance for yesterday + today only
 
         Full sync (full_recalc=True, or first-ever sync):
-          - Imports all device punches
-          - Recalculates daily attendance for the entire current month
+          - Imports all device punches (deduped in batches)
+          - Recalculates daily attendance for the current month (or full history if manual_full=True)
         """
         settings, default_shift = cls.initialize_defaults(db)
 
@@ -172,7 +283,6 @@ class SyncService:
             db.commit()
 
             zk_srv.disconnect()
-            import time
             time.sleep(1)
 
             # --- Step 2: Import raw punches from device ---
@@ -193,62 +303,34 @@ class SyncService:
                         filtered.append(log)
                 zk_logs = filtered
                 logger.info(f"Incremental log import: {len(zk_logs)} device record(s) since {log_cutoff.date()}")
-
-            # Dedup against DB — only load timestamps in the import window
-            if log_cutoff:
-                existing_timestamps = set(
-                    db.query(AttendanceLog.user_id, AttendanceLog.timestamp).filter(
-                        AttendanceLog.timestamp >= log_cutoff
-                    ).all()
-                )
             else:
-                existing_timestamps = set(
-                    db.query(AttendanceLog.user_id, AttendanceLog.timestamp).all()
-                )
-                logger.info(f"Full log import: checking {len(zk_logs)} device record(s) against DB")
+                logger.info(f"Full log import: processing {len(zk_logs)} device record(s) with batched upsert")
 
-            new_logs_added = 0
-            status_map = {0: "Check Out", 1: "Check In", 2: "Break Out", 3: "Break In"}
-            for zk_log in zk_logs:
-                ts = zk_log.timestamp.replace(microsecond=0)
-                user_id = str(zk_log.user_id)
-                if (user_id, ts) not in existing_timestamps:
-                    punch_type = status_map.get(zk_log.status, "Check In" if zk_log.status % 2 != 0 else "Check Out")
-                    log_entry = AttendanceLog(
-                        user_id=user_id,
-                        timestamp=ts,
-                        punch_type=punch_type,
-                        status_code=zk_log.status
-                    )
-                    db.add(log_entry)
-                    new_logs_added += 1
-
-            db.commit()
+            new_logs_added = cls._import_attendance_logs(db, zk_logs, log_cutoff)
             status_info["logs_synced"] = new_logs_added
 
             # --- Step 3: Recalculate daily attendance ---
-            today = datetime.date.today()
-            if full_recalc:
-                min_log_ts = db.query(func.min(AttendanceLog.timestamp)).scalar()
-                start_date = min_log_ts.date() if min_log_ts else today.replace(day=1)
-                cls.process_daily_attendance(db, start_date, today)
-                logger.info(f"Daily attendance recalculated {start_date} → {today} (full sync)")
-            else:
-                yesterday = today - datetime.timedelta(days=1)
-                cls.process_daily_attendance(db, yesterday, today)
-                logger.info(f"Daily attendance recalculated for {yesterday} → {today} (incremental sync)")
+            start_date, end_date = cls._recalc_date_range(db, full_recalc, manual_full=manual_full)
+            cls.process_daily_attendance(db, start_date, end_date)
+            logger.info(
+                f"Daily attendance recalculated {start_date} → {end_date} "
+                f"({'manual full' if manual_full else 'full' if full_recalc else 'incremental'} sync)"
+            )
 
-            status_info["sync_mode"] = "full" if full_recalc else "incremental"
+            status_info["sync_mode"] = "manual_full" if manual_full else ("full" if full_recalc else "incremental")
 
             settings.last_sync_time = datetime.datetime.now()
             settings.last_sync_status = "Success"
-            db.commit()
+            cls._safe_commit(db)
 
         except Exception as e:
             logger.error(f"Sync error: {e}")
             settings.last_sync_time = datetime.datetime.now()
             settings.last_sync_status = f"Failed: {str(e)}"
-            db.commit()
+            try:
+                cls._safe_commit(db)
+            except Exception:
+                db.rollback()
             status_info["status"] = "Failed"
             status_info["error"] = str(e)
 
@@ -256,6 +338,13 @@ class SyncService:
             zk_srv.disconnect()
 
         return status_info
+
+    @staticmethod
+    def _month_end(day: datetime.date) -> datetime.date:
+        if day.month == 12:
+            return day.replace(day=31)
+        next_month = day.replace(day=28) + datetime.timedelta(days=4)
+        return next_month.replace(day=1) - datetime.timedelta(days=1)
 
     @classmethod
     def process_daily_attendance(cls, db: Session, start_date: datetime.date = None, end_date: datetime.date = None):
@@ -266,6 +355,20 @@ class SyncService:
         if not end_date:
             end_date = now.date()
 
+        chunk_start = start_date
+        while chunk_start <= end_date:
+            chunk_end = min(cls._month_end(chunk_start), end_date)
+            cls._process_daily_attendance_range(db, chunk_start, chunk_end, now)
+            chunk_start = chunk_end + datetime.timedelta(days=1)
+
+    @classmethod
+    def _process_daily_attendance_range(
+        cls,
+        db: Session,
+        start_date: datetime.date,
+        end_date: datetime.date,
+        now: datetime.datetime,
+    ):
         employees = db.query(Employee).filter_by(is_active=True).all()
         if not employees:
             return
@@ -293,6 +396,14 @@ class SyncService:
 
         delta = end_date - start_date
         dates = [start_date + datetime.timedelta(days=i) for i in range(delta.days + 1)]
+        pending_writes = 0
+
+        def _touch_write():
+            nonlocal pending_writes
+            pending_writes += 1
+            if pending_writes >= ATTENDANCE_COMMIT_BATCH:
+                cls._safe_commit(db)
+                pending_writes = 0
 
         for target_date in dates:
             if target_date.weekday() >= 5:
@@ -320,6 +431,7 @@ class SyncService:
                     if daily_rec and daily_rec not in existing_recs_map.values():
                         db.add(daily_rec)
                         existing_recs_map[(emp.id, target_date)] = daily_rec
+                    _touch_write()
                     continue
 
                 if not logs:
@@ -351,6 +463,7 @@ class SyncService:
                             daily_rec.late_minutes = 0
                             daily_rec.early_leave_minutes = 0
                             daily_rec.remarks = remarks
+                        _touch_write()
                     continue
 
                 check_in = logs[0].timestamp
@@ -410,4 +523,7 @@ class SyncService:
                     daily_rec.early_leave_minutes = early_leave_mins
                     daily_rec.remarks = remarks
 
-        db.commit()
+                _touch_write()
+
+        if pending_writes:
+            cls._safe_commit(db)

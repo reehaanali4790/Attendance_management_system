@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <!-- CSS Style -->
-    <link rel="stylesheet" href="/css/style.css?v=20260723">
+    <link rel="stylesheet" href="/css/style.css?v=20260728">
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -117,6 +117,10 @@
                         <svg class="icon-spin" id="sync-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path></svg>
                         <span id="sync-btn-text">Sync Now</span>
                     </button>
+                    <button class="btn btn-secondary" id="btn-sync-full" title="Import all device logs and recalculate full history (slower)">
+                        Full Sync
+                    </button>
+                    <p class="sync-hint" id="sync-status-hint">Quick sync imports recent punches only.</p>
                 </div>
             </header>
 
@@ -629,6 +633,6 @@
     </div>
 
     <!-- JS Logic -->
-    <script src="/js/app.js?v=20260723"></script>
+    <script src="/js/app.js?v=20260728"></script>
 </body>
 </html>

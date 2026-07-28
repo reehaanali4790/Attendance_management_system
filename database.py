@@ -95,6 +95,14 @@ engine_kwargs = {"pool_pre_ping": True}
 
 if DATABASE_URL.startswith("sqlite"):
     connect_args = {"check_same_thread": False}
+else:
+    connect_args = {"connect_timeout": 30}
+    engine_kwargs.update({
+        "pool_size": 5,
+        "max_overflow": 10,
+        "pool_recycle": 280,
+        "pool_timeout": 30,
+    })
 
 engine = create_engine(DATABASE_URL, connect_args=connect_args, **engine_kwargs)
 

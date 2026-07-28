@@ -12,6 +12,24 @@ from auth_routes import auth_router
 from auth import seed_default_admin
 from scheduler import start_scheduler, stop_scheduler
 from sync_service import SyncService
+import asyncio
+import logging
+
+startup_logger = logging.getLogger("Startup")
+
+
+async def _run_startup_sync():
+    """Run incremental sync in the background so the server starts immediately."""
+    await asyncio.sleep(2)
+    db = SessionLocal()
+    try:
+        startup_logger.info("Background startup sync starting (incremental)...")
+        result = SyncService.sync(db)
+        startup_logger.info(f"Background startup sync finished: {result}")
+    except Exception as exc:
+        startup_logger.warning(f"Background startup sync failed: {exc}")
+    finally:
+        db.close()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -24,15 +42,12 @@ async def lifespan(app: FastAPI):
     try:
         SyncService.initialize_defaults(db)
         seed_default_admin(db)
-        try:
-            SyncService.sync(db, full_recalc=True)
-        except Exception as e:
-            print(f"Startup initial sync skipped/failed: {e}")
     finally:
         db.close()
         
     # 3. Launch background sync timer
     await start_scheduler()
+    asyncio.create_task(_run_startup_sync())
     
     yield
     

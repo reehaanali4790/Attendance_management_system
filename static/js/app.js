@@ -195,6 +195,8 @@ const syncLastTime = document.getElementById("sync-last-time");
 const btnSync = document.getElementById("btn-sync");
 const syncIcon = document.getElementById("sync-icon");
 const syncBtnText = document.getElementById("sync-btn-text");
+const btnSyncFull = document.getElementById("btn-sync-full");
+const syncStatusHint = document.getElementById("sync-status-hint");
 
 // Initialize application on load
 document.addEventListener("DOMContentLoaded", () => {
@@ -377,17 +379,39 @@ function startCountdown() {
 }
 
 btnSync.addEventListener("click", () => {
-    triggerSync(false);
+    triggerSync(false, false);
 });
 
-async function triggerSync(isAuto = false) {
+if (btnSyncFull) {
+    btnSyncFull.addEventListener("click", () => {
+        const confirmed = window.confirm(
+            "Full sync imports all device punches and recalculates historical attendance. This can take several minutes. Continue?"
+        );
+        if (confirmed) triggerSync(false, true);
+    });
+}
+
+function formatSyncMode(mode) {
+    if (mode === "manual_full") return "full history";
+    if (mode === "full") return "current month";
+    return "recent data";
+}
+
+async function triggerSync(isAuto = false, full = false) {
     if (btnSync.classList.contains("syncing")) return;
     
     btnSync.classList.add("syncing");
-    syncBtnText.textContent = "Syncing...";
+    if (btnSyncFull) btnSyncFull.disabled = true;
+    syncBtnText.textContent = full ? "Full sync running..." : "Syncing recent data...";
+    if (syncStatusHint) {
+        syncStatusHint.textContent = full
+            ? "Importing all device logs and recalculating attendance history..."
+            : "Importing recent punches and updating today/yesterday attendance...";
+    }
     
     try {
-        const response = await apiFetch(`${API_BASE}/api/sync`, { method: "POST" });
+        const url = full ? `${API_BASE}/api/sync?full=true` : `${API_BASE}/api/sync`;
+        const response = await apiFetch(url, { method: "POST" });
         if (!response.ok) {
             const err = await response.json();
             throw new Error(err.detail || "Sync failed");
@@ -395,6 +419,15 @@ async function triggerSync(isAuto = false) {
         
         const result = await response.json();
         console.log("Sync Complete:", result);
+
+        const modeLabel = formatSyncMode(result.sync_mode);
+        const newLogs = result.logs_synced ?? 0;
+        if (syncStatusHint) {
+            syncStatusHint.textContent = `Last sync: ${modeLabel} · ${newLogs} new log(s) imported`;
+        }
+        if (!isAuto) {
+            alert(`Synchronization complete (${modeLabel}). New logs imported: ${newLogs}`);
+        }
         
         // Reload current active tab
         if (currentTab === "dashboard") loadDashboardData();
@@ -407,9 +440,15 @@ async function triggerSync(isAuto = false) {
         
     } catch (error) {
         console.error("Sync Error:", error);
-        alert(`Synchronization Failed: ${error.message}`);
+        if (syncStatusHint) {
+            syncStatusHint.textContent = "Sync failed. The server may still be processing — try again in a minute.";
+        }
+        if (!isAuto) {
+            alert(`Synchronization failed: ${error.message}`);
+        }
     } finally {
         btnSync.classList.remove("syncing");
+        if (btnSyncFull) btnSyncFull.disabled = false;
         syncBtnText.textContent = "Sync Now";
     }
 }

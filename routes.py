@@ -519,7 +519,7 @@ def update_settings(payload: schemas.DeviceSettingsUpdate, db: Session = Depends
 
 @router.post("/api/sync")
 def force_sync(full: bool = False, db: Session = Depends(get_db)):
-    result = SyncService.sync(db, full_recalc=full)
+    result = SyncService.sync(db, full_recalc=full, manual_full=full)
     if result["status"] == "Failed":
         raise HTTPException(status_code=500, detail=result["error"])
     return result
