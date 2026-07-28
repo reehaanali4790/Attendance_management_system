@@ -116,7 +116,45 @@ NAME_FILLER_WORDS = frozenset({
     "hai", "hain", "ho", "tha", "the", "today", "yesterday", "month", "year",
     "late", "present", "absent", "leave", "leaves", "chutti", "chutiyan", "hazri",
     "who", "which", "how", "many", "employee", "employees", "log", "sabse", "zyada",
+    "ilawa", "siwa", "besides", "except", "chor", "chhod", "other", "than",
 })
+
+RANKING_MARKERS = (
+    "sabse zyada", "sab se zyada", "sabse ziada", "sab se ziada",
+    "most ", "highest", "top ", "kis ne ki", "kisne ki", "kaun", "kon ",
+    "ranking", "kitne log",
+)
+
+EXCLUSION_MARKERS = (
+    "ke ilawa", "k ilawa", "ke siwa", "k siwa", "ilawa", "siwa",
+    "besides", "except", "other than", "chor kar", "chhod kar", "chhor kar",
+)
+
+
+def _is_ranking_question(text: str) -> bool:
+    q = (text or "").lower()
+    return any(marker in q for marker in RANKING_MARKERS)
+
+
+def _is_exclusion_question(text: str) -> bool:
+    q = (text or "").lower()
+    return any(marker in q for marker in EXCLUSION_MARKERS)
+
+
+def _resolve_excluded_employees(text: str, db_names: list = None) -> list:
+    """Names the user wants excluded (e.g. 'Hassan aur Raihan ke ilawa ...')."""
+    db_names = db_names or get_db_employee_names()
+    if not text or not _is_exclusion_question(text):
+        return []
+
+    q_lower = text.lower()
+    excluded_fragment = text
+    for marker in sorted(EXCLUSION_MARKERS, key=len, reverse=True):
+        if marker in q_lower:
+            excluded_fragment = text[: q_lower.index(marker)]
+            break
+
+    return resolve_employees_from_text(excluded_fragment, db_names)
 
 def resolve_employees_from_text(text: str, db_names: list = None) -> list:
     """
@@ -246,11 +284,12 @@ CRITICAL RULES:
 3. GENERAL vs SPECIFIC:
    - general: who is late/absent, sabse zyada late kaun, sabse zyada chutiyan, kitne log, ranking across active employees
    - specific_person: question about one named active employee's attendance/leaves/status
+   - EXCLUSION RANKING (CRITICAL): "Hassan aur Raihan ke ilawa sab se zyada chutiyan kis ne ki?" is GENERAL ranking, NOT specific_person.
+     Put excluded names in `excluded_employees` (exact DB spellings) and leave `employees` as [].
+     Phrases: ke ilawa, ilawa, besides, except, siwa, chor kar.
 
-4. EMPLOYEES: List only employees from the registered list above. Use exact Latin spellings from the list.
-   NEVER output Urdu script in the employees array — only Latin/English names from the list.
-   For Urdu/Roman variants (محمد امر, mohammad umer, shehryar) map to the correct DB name (Mohammad Omer, Shaharyar).
-   Leave employees [] for general questions.
+4. EMPLOYEES: List only employees the question is ABOUT (target person for specific_person questions).
+   For exclusion ranking, use `excluded_employees` instead — do NOT put excluded names in `employees`.
 
 5. METRIC values: leaves, late, present, absent, work_hours, ranking, count, check_in, other
 
@@ -261,7 +300,8 @@ CRITICAL RULES:
 Return JSON with keys:
 - resolved_question (string): complete standalone question
 - intent ("general" | "specific_person")
-- employees (array of exact DB employee names, or [])
+- employees (array of exact DB employee names targeted by the question, or [])
+- excluded_employees (array of exact DB names to EXCLUDE from ranking, or [])
 - metric (string)
 - time_period (string or null)
 - is_follow_up (boolean)
@@ -293,21 +333,37 @@ Return JSON with keys:
             suggested_employees = [suggested_employees]
 
         validated = validate_employee_names(suggested_employees, db_names)
-        if not validated:
+        excluded_suggested = raw.get("excluded_employees") or []
+        if isinstance(excluded_suggested, str):
+            excluded_suggested = [excluded_suggested]
+        excluded = validate_employee_names(excluded_suggested, db_names)
+        if not excluded and _is_exclusion_question(latin_query):
+            excluded = _resolve_excluded_employees(latin_query, db_names)
+
+        if not validated and not excluded:
             validated = resolve_employees_from_text(resolved, db_names)
-        if not validated:
+        if not validated and not excluded:
             validated = resolve_employees_from_text(latin_query, db_names)
+
+        is_ranking = _is_ranking_question(resolved) or _is_ranking_question(latin_query)
+        is_exclusion_ranking = is_ranking and bool(excluded or _is_exclusion_question(latin_query))
 
         intent = raw.get("intent", "specific_person")
         if intent not in ("general", "specific_person"):
-            intent = "general" if not validated else "specific_person"
-        elif validated and intent == "general" and suggested_employees:
+            intent = "general" if is_ranking else ("specific_person" if validated else "general")
+        elif is_exclusion_ranking or (is_ranking and "kis ne" in (resolved or latin_query).lower()):
+            intent = "general"
+            if not excluded and validated:
+                excluded = validated
+            validated = []
+        elif validated and intent == "general" and suggested_employees and not is_ranking:
             intent = "specific_person"
 
         understanding = {
             "resolved_question": resolved,
             "intent": intent,
             "employees": validated,
+            "excluded_employees": excluded,
             "metric": raw.get("metric") or "other",
             "time_period": raw.get("time_period"),
             "is_follow_up": bool(raw.get("is_follow_up")),
@@ -316,7 +372,7 @@ Return JSON with keys:
             "original_query": user_query,
             "latin_query": latin_query if latin_query != (user_query or "") else None,
         }
-        print(f"[Understand] '{user_query}' -> intent={intent}, employees={validated}, resolved='{resolved}'")
+        print(f"[Understand] '{user_query}' -> intent={intent}, employees={validated}, excluded={excluded}, resolved='{resolved}'")
         return understanding
     except Exception as e:
         print(f"[Understand Error] {e}")
@@ -1002,6 +1058,13 @@ RULES FOR QUERY GENERATION:
    - Always select `employees.name` alongside counts or date details so the synthesis step knows the matched employee's exact name.
    - ALWAYS add `AND employees.is_active = 1` (or `employees.is_active IS TRUE`) on every query that references the employees table.
    - Rankings like "sabse zyada chutiyan/late/work hours" must only compare ACTIVE employees, never people who left the company.
+   - EXCLUSION RANKING: "Hassan aur Raihan ke ilawa sab se zyada chutiyan kis ne ki?" ->
+     `SELECT employees.name, COUNT(*) AS leave_count FROM daily_attendance JOIN employees ON ... 
+      WHERE daily_attendance.status IN ('Absent', 'On Leave') 
+      AND LOWER(employees.name) NOT IN ('hassan raza', 'rehan ali') 
+      AND employees.is_active IS TRUE 
+      GROUP BY employees.name ORDER BY leave_count DESC LIMIT 1`
+     Use LOWER(employees.name) for NOT IN so casing matches the database.
 
 7. ACTIVE EMPLOYEES ONLY (CRITICAL):
    - Company-wide counts, rankings, and "who has the most" questions apply ONLY to active staff.
@@ -1040,16 +1103,31 @@ def generate_sql(user_query: str, conversation_history: list = None) -> dict:
     resolved_query = understanding["resolved_question"]
     query_intent = understanding["intent"]
     candidate_matches = understanding["employees"]
+    excluded_employees = understanding.get("excluded_employees") or []
     metric = understanding.get("metric", "other")
 
-    if not candidate_matches and query_intent == "specific_person":
+    if is_exclusion_ranking := (query_intent == "general" and excluded_employees):
+        candidate_matches = []
+
+    if not candidate_matches and query_intent == "specific_person" and not excluded_employees:
         candidate_matches = resolve_employees_from_text(resolved_query) or resolve_employees_from_text(latin_query)
         if candidate_matches:
             understanding["employees"] = candidate_matches
             query_intent = "specific_person"
 
     # Build context hint for SQL generation from understanding (not regex rules)
-    if query_intent == "general":
+    if query_intent == "general" and excluded_employees:
+        excluded_sql = ", ".join(repr(name.lower()) for name in excluded_employees)
+        match_hint = (
+            f"\nUNDERSTANDING: GENERAL ranking with EXCLUSIONS — metric={metric}, "
+            f"time_period={understanding.get('time_period')}.\n"
+            f"Find who has the MOST among active employees EXCLUDING: {excluded_employees}.\n"
+            f"Use case-insensitive exclusion: LOWER(employees.name) NOT IN ({excluded_sql}).\n"
+            "Return ONE row: employee name + count, ORDER BY count DESC LIMIT 1.\n"
+            "Count chutti/leave from daily_attendance with status IN ('Absent', 'On Leave').\n"
+            "ALWAYS return valid SQL.\n"
+        )
+    elif query_intent == "general":
         match_hint = (
             f"\nUNDERSTANDING: GENERAL question — metric={metric}, time_period={understanding.get('time_period')}. "
             "Generate SQL across ACTIVE employees only (employees.is_active = 1). "
@@ -1102,8 +1180,11 @@ def generate_sql(user_query: str, conversation_history: list = None) -> dict:
 
         if result.get("sql"):
             result["sql"] = finalize_sql(result["sql"])
+            if excluded_employees:
+                result["sql"] = fix_exclusion_not_in_case(result["sql"], excluded_employees)
 
         result["candidate_matches"] = candidate_matches
+        result["excluded_employees"] = excluded_employees
         result["resolved_query"] = resolved_query if resolved_query != latin_query else None
         result["transliterated_query"] = transliterated_query
         result["query_intent"] = query_intent
@@ -1291,6 +1372,87 @@ def correct_chutti_sql(sql_query: str, user_query: str, metric: str = None) -> s
         print(f"[SQL Chutti Correction]\n  Before: {sql_query}\n  After:  {fixed}")
     return fixed
 
+
+def fix_exclusion_not_in_case(sql_query: str, excluded_names: list) -> str:
+    """PostgreSQL/SQLite name comparisons are case-sensitive — normalize NOT IN exclusions."""
+    if not sql_query or not excluded_names:
+        return sql_query
+
+    lowered = [name.lower().replace("'", "''") for name in excluded_names]
+    in_list = ", ".join(f"'{name}'" for name in lowered)
+
+    sql = re.sub(
+        r"LOWER\s*\(\s*employees\.name\s*\)\s+NOT\s+IN\s*\([^)]+\)",
+        f"LOWER(employees.name) NOT IN ({in_list})",
+        sql_query,
+        flags=re.IGNORECASE,
+    )
+    sql = re.sub(
+        r"employees\.name\s+NOT\s+IN\s*\([^)]+\)",
+        f"LOWER(employees.name) NOT IN ({in_list})",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    if sql != sql_query:
+        print(f"[SQL Exclusion Fix] NOT IN -> ({in_list})")
+    return sql
+
+
+def _extract_ranking_row(query_results: list) -> tuple[str | None, int | None]:
+    if not query_results:
+        return None, None
+    row = query_results[0]
+    name = None
+    count = None
+    for key, value in row.items():
+        key_lower = key.lower()
+        if name is None and ("name" in key_lower or key_lower == "employee"):
+            name = value
+        if count is None and isinstance(value, (int, float)) and (
+            "count" in key_lower or "leave" in key_lower or key_lower.endswith("_count")
+        ):
+            count = int(value)
+    if count is None:
+        for key, value in row.items():
+            if isinstance(value, (int, float)) and key.lower() not in ("id", "employee_id"):
+                count = int(value)
+                break
+    return (str(name) if name else None), count
+
+
+def _format_ranking_answer(
+    query_results: list,
+    understanding: dict,
+    user_query: str,
+    metric: str = "leaves",
+) -> str | None:
+    name, count = _extract_ranking_row(query_results)
+    if not name:
+        return None
+
+    excluded = understanding.get("excluded_employees") or []
+    lang = understanding.get("language") or detect_query_language(user_query)
+    excluded_clause = ""
+    if excluded:
+        names = " aur ".join(excluded) if lang == "roman_urdu" else ", ".join(excluded)
+        if lang == "urdu_script":
+            excluded_clause = f"{names} کے علاوہ، "
+        elif lang == "roman_urdu":
+            excluded_clause = f"{names} ke ilawa, "
+        else:
+            excluded_clause = f"Besides {names}, "
+
+    if metric in ("leaves", "other") and count is not None:
+        if lang == "urdu_script":
+            return f"{excluded_clause}سب سے زیادہ چھٹیاں {name} نے لی ہیں — کل {count}۔"
+        if lang == "roman_urdu":
+            return f"{excluded_clause}sab se zyada chutiyan {name} ne ki hain — kul {count}."
+        return f"{excluded_clause}{name} has the most leave days ({count})."
+
+    if lang == "roman_urdu":
+        return f"{excluded_clause}sab se zyada {name}."
+    return f"{excluded_clause}top result: {name}."
+
 def synthesize_answer(
     user_query: str,
     query_results: list,
@@ -1308,9 +1470,19 @@ def synthesize_answer(
     understanding = understanding or {}
     candidate_matches = candidate_matches or understanding.get("employees") or []
     history = trim_conversation_history(conversation_history or [])
-    employee_confirmed = bool(candidate_matches) and bool(sql_query)
+    employee_confirmed = bool(candidate_matches) and bool(sql_query) and query_intent != "general"
     count_val = _extract_scalar_count(query_results)
     language_rule = _language_instruction(user_query, understanding.get("language"))
+
+    if query_intent == "general" and query_results:
+        deterministic = _format_ranking_answer(
+            query_results,
+            understanding,
+            user_query,
+            metric=understanding.get("metric", "other"),
+        )
+        if deterministic:
+            return deterministic
 
     client = get_openai_client()
     today = datetime.date.today().isoformat()
@@ -1348,6 +1520,8 @@ CRITICAL RULES FOR CONVERSATIONAL SYNTHESIS:
 
 5. ACCURATE NUMBERS & EMPLOYEES:
    - Synthesize numbers, dates, and employee names naturally.
+   - Use ONLY names and counts present in Query Results JSON — NEVER invent or substitute a different employee name.
+   - If Query Results show name=hassan raza, you MUST say hassan raza — never say Farman or any other name.
    - If the employee exists in the database but has no record for today's date, state clearly: "[Employee Name] has not checked in today." / "[Employee Name] ne aaj check-in nahi kiya."
 
 6. CONVERSATION CONTEXT:
