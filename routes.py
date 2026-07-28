@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile, WebSocket, Form
 
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func
+from sqlalchemy import func, case
 from pydantic import BaseModel
 from database import get_db
 import models
@@ -18,15 +18,14 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 VALID_LEAVE_STATUSES = {"Pending", "Approved", "Rejected"}
 
 
-def _department_response(dept: models.Department, db: Session) -> schemas.DepartmentResponse:
-    count = db.query(models.Employee).filter_by(department_id=dept.id).count()
+def _department_response(dept: models.Department, employee_count: int = 0) -> schemas.DepartmentResponse:
     return schemas.DepartmentResponse(
         id=dept.id,
         name=dept.name,
         description=dept.description,
         is_active=dept.is_active,
         created_at=dept.created_at,
-        employee_count=count
+        employee_count=employee_count
     )
 
 
@@ -90,8 +89,16 @@ def get_dashboard(db: Session = Depends(get_db)):
         next_sync_seconds = max(0, int(remaining))
 
     today = datetime.date.today()
+    working_statuses = ("Present", "Late", "Left Early")
+
     total_employees = db.query(models.Employee).filter_by(is_active=True).count()
-    attendance_today = db.query(models.DailyAttendance).filter_by(date=today).all()
+
+    status_rows = db.query(
+        models.DailyAttendance.status,
+        func.count(models.DailyAttendance.id),
+    ).filter(
+        models.DailyAttendance.date == today
+    ).group_by(models.DailyAttendance.status).all()
 
     present_today = 0
     late_today = 0
@@ -99,51 +106,69 @@ def get_dashboard(db: Session = Depends(get_db)):
     absent_today = 0
     on_leave_today = 0
     half_day_today = 0
-    total_hours = 0.0
-    present_count_hours = 0
+    for status, cnt in status_rows:
+        if status == "Absent":
+            absent_today = cnt
+        elif status == "On Leave":
+            on_leave_today = cnt
+        elif status == "Half Day":
+            half_day_today = cnt
+        elif status in working_statuses:
+            present_today += cnt
+            if status == "Late":
+                late_today = cnt
+            elif status == "Left Early":
+                left_early_today = cnt
 
-    working_statuses = {"Present", "Late", "Left Early"}
-    for att in attendance_today:
-        if att.status == "Absent":
-            absent_today += 1
-        elif att.status == "On Leave":
-            on_leave_today += 1
-        elif att.status == "Half Day":
-            half_day_today += 1
-        elif att.status in working_statuses:
-            present_today += 1
-            if att.status == "Late":
-                late_today += 1
-            elif att.status == "Left Early":
-                left_early_today += 1
-            if att.work_hours > 0:
-                total_hours += att.work_hours
-                present_count_hours += 1
+    avg_hours = db.query(func.avg(models.DailyAttendance.work_hours)).filter(
+        models.DailyAttendance.date == today,
+        models.DailyAttendance.status.in_(working_statuses),
+        models.DailyAttendance.work_hours > 0,
+    ).scalar()
+    avg_hours = round(float(avg_hours), 2) if avg_hours else 0.0
 
-    avg_hours = round(total_hours / present_count_hours, 2) if present_count_hours > 0 else 0.0
-
-    recent_logs = db.query(models.AttendanceLog).order_by(models.AttendanceLog.timestamp.desc()).limit(10).all()
-    emp_map = {e.user_id: e.name for e in db.query(models.Employee).all()}
+    recent_logs = (
+        db.query(models.AttendanceLog, models.Employee.name)
+        .outerjoin(models.Employee, models.Employee.user_id == models.AttendanceLog.user_id)
+        .order_by(models.AttendanceLog.timestamp.desc())
+        .limit(10)
+        .all()
+    )
     recent_punches = [
         schemas.RecentPunch(
             user_id=log.user_id,
-            employee_name=emp_map.get(log.user_id, "Unknown User"),
+            employee_name=name or "Unknown User",
             timestamp=log.timestamp,
-            punch_type=log.punch_type
+            punch_type=log.punch_type,
         )
-        for log in recent_logs
+        for log, name in recent_logs
     ]
 
     start_trend_date = today - datetime.timedelta(days=7)
-    trend_recs = db.query(models.DailyAttendance).filter(
+    trend_rows = db.query(
+        models.DailyAttendance.date,
+        models.DailyAttendance.status,
+        func.count(models.DailyAttendance.id),
+    ).filter(
         models.DailyAttendance.date >= start_trend_date,
-        models.DailyAttendance.date <= today
+        models.DailyAttendance.date <= today,
+    ).group_by(
+        models.DailyAttendance.date,
+        models.DailyAttendance.status,
     ).all()
 
-    trend_recs_by_date = {}
-    for r in trend_recs:
-        d_str = r.date.strftime("%Y-%m-%d")
-        trend_recs_by_date.setdefault(d_str, []).append(r)
+    trend_by_date = {}
+    for day, status, cnt in trend_rows:
+        d_str = day.strftime("%Y-%m-%d")
+        bucket = trend_by_date.setdefault(d_str, {"present": 0, "late": 0, "absent": 0, "on_leave": 0})
+        if status in working_statuses:
+            bucket["present"] += cnt
+        if status == "Late":
+            bucket["late"] += cnt
+        if status == "Absent":
+            bucket["absent"] += cnt
+        if status == "On Leave":
+            bucket["on_leave"] += cnt
 
     weekly_trend = {}
     for day_offset in range(7, -1, -1):
@@ -151,37 +176,37 @@ def get_dashboard(db: Session = Depends(get_db)):
         if d.weekday() >= 5:
             continue
         d_str = d.strftime("%Y-%m-%d")
-        recs = trend_recs_by_date.get(d_str, [])
-        weekly_trend[d_str] = {
-            "present": sum(1 for r in recs if r.status in working_statuses),
-            "late": sum(1 for r in recs if r.status == "Late"),
-            "absent": sum(1 for r in recs if r.status == "Absent"),
-            "on_leave": sum(1 for r in recs if r.status == "On Leave"),
-        }
+        weekly_trend[d_str] = trend_by_date.get(
+            d_str, {"present": 0, "late": 0, "absent": 0, "on_leave": 0}
+        )
 
-    # Calculate department stats for today
-    dept_stats = []
-    depts = db.query(models.Department).filter_by(is_active=True).all()
-    for dept in depts:
-        emp_ids = [e.id for e in dept.employees if e.is_active]
-        if not emp_ids:
-            continue
-        dept_attendance = db.query(models.DailyAttendance).filter(
-            models.DailyAttendance.date == today,
-            models.DailyAttendance.employee_id.in_(emp_ids)
-        ).all()
-        
-        dept_present = sum(1 for r in dept_attendance if r.status in working_statuses)
-        dept_absent = sum(1 for r in dept_attendance if r.status == "Absent")
-        dept_on_leave = sum(1 for r in dept_attendance if r.status == "On Leave")
-        
-        dept_stats.append({
-            "department_name": dept.name,
-            "total_employees": len(emp_ids),
-            "present": dept_present,
-            "absent": dept_absent,
-            "on_leave": dept_on_leave
-        })
+    dept_rows = db.query(
+        models.Department.name.label("department_name"),
+        func.count(func.distinct(models.Employee.id)).label("total_employees"),
+        func.sum(case((models.DailyAttendance.status.in_(working_statuses), 1), else_=0)).label("present"),
+        func.sum(case((models.DailyAttendance.status == "Absent", 1), else_=0)).label("absent"),
+        func.sum(case((models.DailyAttendance.status == "On Leave", 1), else_=0)).label("on_leave"),
+    ).join(
+        models.Employee, models.Employee.department_id == models.Department.id
+    ).outerjoin(
+        models.DailyAttendance,
+        (models.DailyAttendance.employee_id == models.Employee.id)
+        & (models.DailyAttendance.date == today),
+    ).filter(
+        models.Department.is_active.is_(True),
+        models.Employee.is_active.is_(True),
+    ).group_by(models.Department.name).all()
+
+    dept_stats = [
+        {
+            "department_name": row.department_name,
+            "total_employees": int(row.total_employees or 0),
+            "present": int(row.present or 0),
+            "absent": int(row.absent or 0),
+            "on_leave": int(row.on_leave or 0),
+        }
+        for row in dept_rows
+    ]
 
     return schemas.DashboardSummary(
         total_employees=total_employees,
@@ -208,6 +233,7 @@ def get_attendance(
     status: Optional[str] = None,
     search: Optional[str] = None,
     department_id: Optional[int] = None,
+    recalculate: bool = False,
     db: Session = Depends(get_db)
 ):
     if not start_date:
@@ -215,10 +241,12 @@ def get_attendance(
     if not end_date:
         end_date = datetime.date.today()
 
-    # Build daily summaries from raw punches for the requested range (lazy/on-demand)
-    SyncService.process_daily_attendance(db, start_date, end_date)
+    if recalculate:
+        schedule_attendance_recalc(start_date, end_date)
 
-    query = db.query(models.DailyAttendance).join(models.Employee)
+    query = db.query(models.DailyAttendance).options(
+        joinedload(models.DailyAttendance.employee).joinedload(models.Employee.department)
+    ).join(models.Employee)
     query = query.filter(models.DailyAttendance.date >= start_date)
     query = query.filter(models.DailyAttendance.date <= end_date)
     if status:
@@ -283,7 +311,15 @@ def update_employee(emp_id: int, payload: schemas.EmployeeUpdate, db: Session = 
 @router.get("/api/departments", response_model=List[schemas.DepartmentResponse])
 def get_departments(db: Session = Depends(get_db)):
     departments = db.query(models.Department).order_by(models.Department.name).all()
-    return [_department_response(d, db) for d in departments]
+    count_rows = db.query(
+        models.Employee.department_id,
+        func.count(models.Employee.id),
+    ).filter(
+        models.Employee.is_active.is_(True),
+        models.Employee.department_id.isnot(None),
+    ).group_by(models.Employee.department_id).all()
+    employee_counts = {dept_id: cnt for dept_id, cnt in count_rows}
+    return [_department_response(d, employee_counts.get(d.id, 0)) for d in departments]
 
 
 @router.post("/api/departments", response_model=schemas.DepartmentResponse)
@@ -295,7 +331,7 @@ def create_department(payload: schemas.DepartmentCreate, db: Session = Depends(g
     db.add(dept)
     db.commit()
     db.refresh(dept)
-    return _department_response(dept, db)
+    return _department_response(dept, 0)
 
 
 @router.put("/api/departments/{dept_id}", response_model=schemas.DepartmentResponse)
@@ -317,7 +353,8 @@ def update_department(dept_id: int, payload: schemas.DepartmentUpdate, db: Sessi
         dept.is_active = payload.is_active
     db.commit()
     db.refresh(dept)
-    return _department_response(dept, db)
+    count = db.query(models.Employee).filter_by(department_id=dept.id, is_active=True).count()
+    return _department_response(dept, count)
 
 
 @router.delete("/api/departments/{dept_id}")
@@ -406,7 +443,7 @@ def create_leave(payload: schemas.LeaveRequestCreate, db: Session = Depends(get_
     db.add(lr)
     db.commit()
     db.refresh(lr)
-    SyncService.process_daily_attendance(db, payload.start_date, payload.end_date)
+    schedule_attendance_recalc(payload.start_date, payload.end_date)
 
     lr = db.query(models.LeaveRequest).options(
         joinedload(models.LeaveRequest.employee).joinedload(models.Employee.department),
@@ -441,7 +478,7 @@ def update_leave(leave_id: int, payload: schemas.LeaveRequestUpdate, db: Session
     db.commit()
     recalc_start = min(lr.start_date, start)
     recalc_end = max(lr.end_date, end)
-    SyncService.process_daily_attendance(db, recalc_start, recalc_end)
+    schedule_attendance_recalc(recalc_start, recalc_end)
 
     lr = db.query(models.LeaveRequest).options(
         joinedload(models.LeaveRequest.employee).joinedload(models.Employee.department),
@@ -458,7 +495,7 @@ def delete_leave(leave_id: int, db: Session = Depends(get_db)):
     start, end = lr.start_date, lr.end_date
     db.delete(lr)
     db.commit()
-    SyncService.process_daily_attendance(db, start, end)
+    schedule_attendance_recalc(start, end)
     return {"status": "deleted"}
 
 
@@ -539,9 +576,9 @@ def export_attendance(
     if not end_date:
         end_date = datetime.date.today()
 
-    SyncService.process_daily_attendance(db, start_date, end_date)
-
-    query = db.query(models.DailyAttendance).join(models.Employee)
+    query = db.query(models.DailyAttendance).options(
+        joinedload(models.DailyAttendance.employee).joinedload(models.Employee.department)
+    ).join(models.Employee)
     query = query.filter(models.DailyAttendance.date >= start_date)
     query = query.filter(models.DailyAttendance.date <= end_date)
     

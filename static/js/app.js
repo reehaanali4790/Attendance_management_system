@@ -687,7 +687,7 @@ function setupAttendanceFilters() {
 
 async function loadAttendanceLogs() {
     const tableBody = document.getElementById("attendance-table-body");
-    tableBody.innerHTML = `<tr><td colspan="11" class="text-center">Building records for selected date range...</td></tr>`;
+    tableBody.innerHTML = `<tr><td colspan="11" class="text-center">Loading attendance records...</td></tr>`;
     
     const start = document.getElementById("filter-start-date").value;
     const end = document.getElementById("filter-end-date").value;
