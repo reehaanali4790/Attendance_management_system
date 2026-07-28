@@ -852,7 +852,11 @@ function setupEmployeeModal() {
                 })
             });
             
-            if (!response.ok) throw new Error("Could not update employee settings");
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                const detail = errData.detail || response.statusText || "Could not update employee settings";
+                throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+            }
             
             modal.style.display = "none";
             loadEmployees(); // Reload list
@@ -959,8 +963,9 @@ function setupSettingsForms() {
             }
             
             if (!response.ok) {
-                const errData = await response.json();
-                throw new Error(errData.detail || "Could not save shift config");
+                const errData = await response.json().catch(() => ({}));
+                const detail = errData.detail || response.statusText || "Could not save shift config";
+                throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
             }
             
             alert(id ? "Shift updated successfully!" : "New Shift created successfully!");

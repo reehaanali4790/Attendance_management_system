@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from database import get_db
 import models
 import schemas
-from sync_service import SyncService
+from sync_service import SyncService, schedule_attendance_recalc
 from auth import get_current_user
 import datetime
 from typing import List, Optional
@@ -275,7 +275,7 @@ def update_employee(emp_id: int, payload: schemas.EmployeeUpdate, db: Session = 
 
     db.commit()
     db.refresh(emp)
-    SyncService.process_daily_attendance(db)
+    schedule_attendance_recalc()
     return emp
 
 
@@ -485,11 +485,11 @@ def update_shift(shift_id: int, payload: schemas.ShiftUpdate, db: Session = Depe
     shift = db.query(models.Shift).filter_by(id=shift_id).first()
     if not shift:
         raise HTTPException(status_code=404, detail="Shift not found")
-    for key, value in payload.model_dump().items():
+    for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(shift, key, value)
     db.commit()
     db.refresh(shift)
-    SyncService.process_daily_attendance(db)
+    schedule_attendance_recalc()
     return shift
 
 

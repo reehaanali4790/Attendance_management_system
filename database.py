@@ -93,15 +93,28 @@ DATABASE_URL = resolve_database_url()
 connect_args = {}
 engine_kwargs = {"pool_pre_ping": True}
 
+
+def _is_supabase_pooler(url: str) -> bool:
+    lowered = url.lower()
+    return "pooler.supabase.com" in lowered or ".supabase.co" in lowered
+
+
 if DATABASE_URL.startswith("sqlite"):
     connect_args = {"check_same_thread": False}
 else:
     connect_args = {"connect_timeout": 30}
+    pool_size = int(os.getenv("DB_POOL_SIZE", "0"))
+    max_overflow = int(os.getenv("DB_MAX_OVERFLOW", "0"))
+    if pool_size <= 0:
+        pool_size = 1 if _is_supabase_pooler(DATABASE_URL) else 3
+    if max_overflow <= 0:
+        max_overflow = 1 if _is_supabase_pooler(DATABASE_URL) else 5
     engine_kwargs.update({
-        "pool_size": 5,
-        "max_overflow": 10,
-        "pool_recycle": 280,
-        "pool_timeout": 30,
+        "pool_size": pool_size,
+        "max_overflow": max_overflow,
+        "pool_recycle": 180,
+        "pool_timeout": 60,
+        "pool_use_lifo": True,
     })
 
 engine = create_engine(DATABASE_URL, connect_args=connect_args, **engine_kwargs)

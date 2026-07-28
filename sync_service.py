@@ -1,6 +1,7 @@
 import datetime
 import time
 import logging
+import threading
 from sqlalchemy import func, text
 from sqlalchemy.exc import OperationalError, IntegrityError
 from sqlalchemy.orm import Session
@@ -14,6 +15,9 @@ logger = logging.getLogger("SyncService")
 LOG_INSERT_BATCH = 500
 ATTENDANCE_COMMIT_BATCH = 150
 
+_sync_lock = threading.Lock()
+_recalc_lock = threading.Lock()
+
 DEFAULT_LEAVE_TYPES = [
     {"name": "Sick Leave", "description": "Medical or health-related absence", "is_paid": True},
     {"name": "Casual Leave", "description": "Personal or casual absence", "is_paid": True},
@@ -23,6 +27,35 @@ DEFAULT_LEAVE_TYPES = [
 ]
 
 ATTENDANCE_STATUSES = {"Present", "Late", "Absent", "Left Early", "Half Day", "On Leave"}
+
+
+def schedule_attendance_recalc(
+    start_date: datetime.date = None,
+    end_date: datetime.date = None,
+) -> None:
+    """Recalculate attendance in a background thread so API requests release DB connections quickly."""
+
+    def _job():
+        if not _recalc_lock.acquire(blocking=False):
+            logger.info("Attendance recalc skipped — another recalc is already running.")
+            return
+        from database import SessionLocal
+
+        db = SessionLocal()
+        try:
+            today = datetime.date.today()
+            SyncService.process_daily_attendance(
+                db,
+                start_date or today.replace(day=1),
+                end_date or today,
+            )
+        except Exception as exc:
+            logger.error(f"Background attendance recalc failed: {exc}")
+        finally:
+            db.close()
+            _recalc_lock.release()
+
+    threading.Thread(target=_job, daemon=True, name="attendance-recalc").start()
 
 
 class SyncService:
@@ -254,6 +287,31 @@ class SyncService:
             "error": None
         }
 
+        if not _sync_lock.acquire(blocking=False):
+            logger.info("Sync skipped — another sync is already running.")
+            return {
+                "status": "Skipped",
+                "users_synced": 0,
+                "logs_synced": 0,
+                "error": None,
+                "sync_mode": "busy",
+            }
+
+        try:
+            return cls._run_sync(db, full_recalc, manual_full, status_info, settings, zk_srv)
+        finally:
+            _sync_lock.release()
+
+    @classmethod
+    def _run_sync(
+        cls,
+        db: Session,
+        full_recalc: bool,
+        manual_full: bool,
+        status_info: dict,
+        settings,
+        zk_srv,
+    ) -> dict:
         try:
             is_first_sync = settings.last_sync_time is None
             if is_first_sync:
