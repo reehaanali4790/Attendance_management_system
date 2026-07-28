@@ -58,6 +58,12 @@ def schedule_attendance_recalc(
     threading.Thread(target=_job, daemon=True, name="attendance-recalc").start()
 
 
+def schedule_recent_attendance_recalc() -> None:
+    """Recalculate only yesterday + today (fast path after shift/employee edits)."""
+    today = datetime.date.today()
+    schedule_attendance_recalc(today - datetime.timedelta(days=1), today)
+
+
 class SyncService:
     @staticmethod
     def _safe_commit(db: Session, retries: int = 3) -> None:

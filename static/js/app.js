@@ -835,56 +835,84 @@ function setupEmployeeModal() {
     
     document.getElementById("edit-employee-form").addEventListener("submit", async (e) => {
         e.preventDefault();
-        
+
+        const saveBtn = e.target.querySelector('button[type="submit"]');
         const empId = document.getElementById("edit-emp-id").value;
         const shiftId = document.getElementById("edit-emp-shift").value;
         const deptId = document.getElementById("edit-emp-department").value;
         const isActive = document.getElementById("edit-emp-active").checked;
-        
+
+        if (!shiftId) {
+            alert("Please select a shift before saving.");
+            return;
+        }
+
+        if (saveBtn) {
+            saveBtn.disabled = true;
+            saveBtn.textContent = "Saving...";
+        }
+
         try {
             const response = await apiFetch(`${API_BASE}/api/employees/${empId}`, {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    shift_id: shiftId ? parseInt(shiftId) : null,
-                    department_id: deptId ? parseInt(deptId) : 0,
+                    shift_id: parseInt(shiftId, 10),
+                    department_id: deptId ? parseInt(deptId, 10) : 0,
                     is_active: isActive
                 })
             });
-            
+
             if (!response.ok) {
                 const errData = await response.json().catch(() => ({}));
                 const detail = errData.detail || response.statusText || "Could not update employee settings";
                 throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
             }
-            
+
             modal.style.display = "none";
-            loadEmployees(); // Reload list
-            
+            await loadEmployees();
         } catch (error) {
             alert(`Error: ${error.message}`);
+        } finally {
+            if (saveBtn) {
+                saveBtn.disabled = false;
+                saveBtn.textContent = "Save Employee Details";
+            }
         }
     });
 }
 
-window.openEditEmployeeModal = function(id, name, shiftId, departmentId, isActive) {
+window.openEditEmployeeModal = async function(id, name, shiftId, departmentId, isActive) {
     const modal = document.getElementById("employee-modal");
+    if (!allShifts.length) {
+        try {
+            await fetchAllShifts();
+        } catch (error) {
+            alert(`Could not load shifts: ${error.message}`);
+            return;
+        }
+    }
+
     document.getElementById("edit-emp-id").value = id;
     document.getElementById("edit-emp-name").value = name;
     document.getElementById("edit-emp-active").checked = isActive;
-    
+
     const shiftSelect = document.getElementById("edit-emp-shift");
     shiftSelect.innerHTML = "";
-    allShifts.forEach(shift => {
-        const option = document.createElement("option");
-        option.value = shift.id;
-        option.textContent = `${shift.name} (${shift.start_time.substring(0, 5)} - ${shift.end_time.substring(0, 5)})`;
-        if (shiftId && shift.id === shiftId) option.selected = true;
-        shiftSelect.appendChild(option);
-    });
+    if (!allShifts.length) {
+        shiftSelect.innerHTML = `<option value="">No shifts configured — add one in Settings</option>`;
+    } else {
+        allShifts.forEach(shift => {
+            const option = document.createElement("option");
+            option.value = shift.id;
+            option.textContent = `${shift.name} (${shift.start_time.substring(0, 5)} - ${shift.end_time.substring(0, 5)})`;
+            if (shiftId && Number(shift.id) === Number(shiftId)) option.selected = true;
+            shiftSelect.appendChild(option);
+        });
+    }
 
     populateDepartmentSelect("edit-emp-department", true, departmentId, "Unassigned");
-    
+
     modal.style.display = "flex";
 };
 
@@ -1014,22 +1042,29 @@ async function loadSettings() {
     }
 }
 
+async function fetchAllShifts() {
+    const response = await apiFetch(`${API_BASE}/api/shifts`);
+    if (!response.ok) throw new Error("Could not load company shifts");
+    allShifts = await response.json();
+    return allShifts;
+}
+
 async function loadAllShifts() {
     const listEl = document.getElementById("shifts-list");
-    listEl.innerHTML = "<p>Loading shifts...</p>";
-    
+    if (listEl) listEl.innerHTML = "<p>Loading shifts...</p>";
+
     try {
-        const response = await apiFetch(`${API_BASE}/api/shifts`);
-        if (!response.ok) throw new Error("Could not load company shifts");
-        allShifts = await response.json();
-        
+        await fetchAllShifts();
+
+        if (!listEl) return;
+
         listEl.innerHTML = "";
-        
+
         if (allShifts.length === 0) {
             listEl.innerHTML = `<p class="page-subtitle">No custom shifts configured yet.</p>`;
             return;
         }
-        
+
         allShifts.forEach(shift => {
             const item = document.createElement("div");
             item.className = "shift-item";

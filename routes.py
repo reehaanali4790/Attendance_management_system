@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile, WebSocket, Form
+from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile, WebSocket, Form, BackgroundTasks
 
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, case
@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from database import get_db
 import models
 import schemas
-from sync_service import SyncService, schedule_attendance_recalc
+from sync_service import SyncService, schedule_attendance_recalc, schedule_recent_attendance_recalc
 from auth import get_current_user
 import datetime
 from typing import List, Optional
@@ -288,10 +288,13 @@ def update_employee(emp_id: int, payload: schemas.EmployeeUpdate, db: Session = 
     if payload.is_active is not None:
         emp.is_active = payload.is_active
     if payload.shift_id is not None:
-        shift = db.query(models.Shift).filter_by(id=payload.shift_id).first()
-        if not shift:
-            raise HTTPException(status_code=400, detail="Shift not found")
-        emp.shift_id = payload.shift_id
+        if payload.shift_id == 0:
+            emp.shift_id = None
+        else:
+            shift = db.query(models.Shift).filter_by(id=payload.shift_id).first()
+            if not shift:
+                raise HTTPException(status_code=400, detail="Shift not found")
+            emp.shift_id = payload.shift_id
     if payload.department_id is not None:
         if payload.department_id == 0:
             emp.department_id = None
@@ -302,9 +305,12 @@ def update_employee(emp_id: int, payload: schemas.EmployeeUpdate, db: Session = 
             emp.department_id = payload.department_id
 
     db.commit()
-    db.refresh(emp)
-    schedule_attendance_recalc()
-    return emp
+
+    updated = db.query(models.Employee).options(
+        joinedload(models.Employee.shift),
+        joinedload(models.Employee.department),
+    ).filter_by(id=emp_id).first()
+    return updated
 
 
 # --- Departments ---
@@ -518,7 +524,12 @@ def create_shift(payload: schemas.ShiftCreate, db: Session = Depends(get_db)):
 
 
 @router.put("/api/shifts/{shift_id}", response_model=schemas.ShiftResponse)
-def update_shift(shift_id: int, payload: schemas.ShiftUpdate, db: Session = Depends(get_db)):
+def update_shift(
+    shift_id: int,
+    payload: schemas.ShiftUpdate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     shift = db.query(models.Shift).filter_by(id=shift_id).first()
     if not shift:
         raise HTTPException(status_code=404, detail="Shift not found")
@@ -526,7 +537,7 @@ def update_shift(shift_id: int, payload: schemas.ShiftUpdate, db: Session = Depe
         setattr(shift, key, value)
     db.commit()
     db.refresh(shift)
-    schedule_attendance_recalc()
+    background_tasks.add_task(schedule_recent_attendance_recalc)
     return shift
 
 
