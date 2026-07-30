@@ -655,7 +655,7 @@ function setupAttendanceFilters() {
         const start = document.getElementById("filter-start-date").value;
         const end = document.getElementById("filter-end-date").value;
         const status = document.getElementById("filter-status").value;
-        const search = document.getElementById("filter-search-input").value;
+        const search = document.getElementById("filter-search-input").value.trim();
         const departmentId = document.getElementById("filter-department").value;
         
         let url = `${API_BASE}/api/attendance/export?`;
@@ -672,7 +672,18 @@ function setupAttendanceFilters() {
             const downloadUrl = window.URL.createObjectURL(blob);
             const link = document.createElement("a");
             link.href = downloadUrl;
-            link.download = `attendance_export_${new Date().toISOString().slice(0, 10)}.xlsx`;
+
+            const disposition = response.headers.get("Content-Disposition") || "";
+            const filenameMatch = disposition.match(/filename="?([^"]+)"?/i);
+            if (filenameMatch) {
+                link.download = filenameMatch[1];
+            } else if (search) {
+                const safeName = search.replace(/[^\w\-]+/g, "_");
+                link.download = `${safeName}_attendance.xlsx`;
+            } else {
+                link.download = `attendance_export_${new Date().toISOString().slice(0, 10)}.xlsx`;
+            }
+
             document.body.appendChild(link);
             link.click();
             link.remove();

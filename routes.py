@@ -608,71 +608,82 @@ def export_attendance(
     status: Optional[str] = None,
     search: Optional[str] = None,
     department_id: Optional[int] = None,
+    employee_id: Optional[int] = None,
     db: Session = Depends(get_db)
 ):
+    from fastapi.responses import StreamingResponse
+    from export_service import (
+        build_bulk_attendance_workbook,
+        build_individual_attendance_workbook,
+        individual_export_filename,
+    )
+
     if not start_date:
         start_date = datetime.date.today().replace(day=1)
     if not end_date:
         end_date = datetime.date.today()
+
+    settings = db.query(models.DeviceSettings).first()
+    if not settings:
+        settings, _ = SyncService.initialize_defaults(db)
+
+    target_employee = None
+    if employee_id:
+        target_employee = db.query(models.Employee).filter_by(id=employee_id).first()
+        if not target_employee:
+            raise HTTPException(status_code=404, detail="Employee not found")
+    elif search:
+        matches = db.query(models.Employee).filter(
+            (models.Employee.name.ilike(f"%{search}%")) |
+            (models.Employee.user_id == search)
+        ).all()
+        if len(matches) == 1:
+            target_employee = matches[0]
+
+    if target_employee:
+        records = db.query(models.DailyAttendance).filter(
+            models.DailyAttendance.employee_id == target_employee.id,
+            models.DailyAttendance.date >= start_date,
+            models.DailyAttendance.date <= end_date,
+        ).all()
+        records_by_date = {record.date: record for record in records}
+        stream = build_individual_attendance_workbook(
+            target_employee,
+            records_by_date,
+            settings,
+            start_date,
+            end_date,
+        )
+        filename = individual_export_filename(target_employee, start_date, end_date)
+        return StreamingResponse(
+            stream,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     query = db.query(models.DailyAttendance).options(
         joinedload(models.DailyAttendance.employee).joinedload(models.Employee.department)
     ).join(models.Employee)
     query = query.filter(models.DailyAttendance.date >= start_date)
     query = query.filter(models.DailyAttendance.date <= end_date)
-    
+
     if status:
         query = query.filter(models.DailyAttendance.status == status)
     if search:
         query = query.filter(
-            (models.Employee.name.like(f"%{search}%")) |
+            (models.Employee.name.ilike(f"%{search}%")) |
             (models.Employee.user_id == search)
         )
     if department_id:
         query = query.filter(models.Employee.department_id == department_id)
 
     records = query.order_by(models.DailyAttendance.date.desc(), models.Employee.name).all()
-
-    import io
-    from openpyxl import Workbook
-    from fastapi.responses import StreamingResponse
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Attendance Logs"
-    headers = [
-        "Date", "Employee Name", "Department", "Device ID", "Check In", "Check Out",
-        "Work Hours", "Status", "Late Minutes", "Early Leave Minutes", "Remarks"
-    ]
-    ws.append(headers)
-
-    for r in records:
-        ws.append([
-            r.date.strftime("%Y-%m-%d"),
-            r.employee.name,
-            r.employee.department.name if r.employee.department else "",
-            r.employee.user_id,
-            r.check_in.strftime("%Y-%m-%d %H:%M:%S") if r.check_in else "",
-            r.check_out.strftime("%Y-%m-%d %H:%M:%S") if r.check_out else "",
-            r.work_hours,
-            r.status,
-            r.late_minutes,
-            r.early_leave_minutes,
-            r.remarks or ""
-        ])
-
-    for col in ws.columns:
-        max_len = max(len(str(cell.value or '')) for cell in col)
-        ws.column_dimensions[col[0].column_letter].width = max(max_len + 3, 10)
-
-    stream = io.BytesIO()
-    wb.save(stream)
-    stream.seek(0)
+    stream = build_bulk_attendance_workbook(records)
     filename = f"attendance_report_{start_date}_to_{end_date}.xlsx"
     return StreamingResponse(
         stream,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
