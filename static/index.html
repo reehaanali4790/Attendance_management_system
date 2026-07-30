@@ -533,6 +533,58 @@
                             </div>
                         </div>
 
+                        <!-- Work Week Policy -->
+                        <div class="card glass-card">
+                            <div class="card-header">
+                                <h3 class="card-title">Work Week Policy</h3>
+                                <p class="card-subtitle">Mon–Fri uses each employee's assigned shift. Saturday uses the office hours below.</p>
+                            </div>
+                            <div class="card-body">
+                                <form id="work-week-form" class="settings-form">
+                                    <div class="form-group">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" id="saturday-working" checked>
+                                            Saturday is a working day
+                                        </label>
+                                    </div>
+
+                                    <div class="form-row">
+                                        <div class="form-group">
+                                            <label for="saturday-start">Saturday Start</label>
+                                            <input type="time" id="saturday-start" value="11:00" class="form-control" required>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="saturday-end">Saturday End</label>
+                                            <input type="time" id="saturday-end" value="16:00" class="form-control" required>
+                                        </div>
+                                    </div>
+
+                                    <div class="form-row">
+                                        <div class="form-group">
+                                            <label for="saturday-grace">Saturday Grace (Minutes)</label>
+                                            <input type="number" id="saturday-grace" value="15" min="0" class="form-control" required>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="saturday-late">Saturday Late After (Minutes)</label>
+                                            <input type="number" id="saturday-late" value="30" min="0" class="form-control" required>
+                                        </div>
+                                    </div>
+
+                                    <div class="form-group">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" id="sunday-working">
+                                            Sunday is a working day
+                                        </label>
+                                        <small class="form-help">Leave unchecked if Sunday is off. Sunday uses normal shift times when enabled.</small>
+                                    </div>
+
+                                    <div class="settings-actions">
+                                        <button type="submit" class="btn btn-primary" id="btn-save-work-week">Save Work Week Policy</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+
                         <!-- Shift Times Config Form -->
                         <div class="card glass-card">
                             <div class="card-header">
@@ -633,6 +685,6 @@
     </div>
 
     <!-- JS Logic -->
-    <script src="/js/app.js?v=20260728d"></script>
+    <script src="/js/app.js?v=20260730a"></script>
 </body>
 </html>

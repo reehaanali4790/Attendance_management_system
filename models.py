@@ -13,6 +13,13 @@ class DeviceSettings(Base):
     sync_interval_minutes = Column(Integer, default=5)
     last_sync_time = Column(DateTime, nullable=True)
     last_sync_status = Column(String, nullable=True)
+    # Saturday half-day policy (office works Sat 11:00–16:00 by default; Sunday off)
+    saturday_is_working_day = Column(Boolean, default=True)
+    saturday_start_time = Column(Time, default=datetime.time(11, 0))
+    saturday_end_time = Column(Time, default=datetime.time(16, 0))
+    saturday_grace_period_minutes = Column(Integer, default=15)
+    saturday_late_after_minutes = Column(Integer, default=30)
+    sunday_is_working_day = Column(Boolean, default=False)
 
 class Department(Base):
     __tablename__ = "departments"

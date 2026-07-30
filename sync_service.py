@@ -29,6 +29,48 @@ DEFAULT_LEAVE_TYPES = [
 ATTENDANCE_STATUSES = {"Present", "Late", "Absent", "Left Early", "Half Day", "On Leave"}
 
 
+def _settings_flag(settings: DeviceSettings, name: str, default: bool) -> bool:
+    value = getattr(settings, name, default)
+    if value is None:
+        return default
+    return bool(value)
+
+
+def is_working_day(target_date: datetime.date, settings: DeviceSettings) -> bool:
+    """Return whether attendance should be calculated for this calendar day."""
+    weekday = target_date.weekday()
+    if weekday == 6:
+        return _settings_flag(settings, "sunday_is_working_day", False)
+    if weekday == 5:
+        return _settings_flag(settings, "saturday_is_working_day", True)
+    return weekday < 5
+
+
+def get_effective_shift_times(
+    shift: Shift,
+    target_date: datetime.date,
+    settings: DeviceSettings,
+) -> tuple[datetime.time, datetime.time, int, int]:
+    """Resolve shift start/end and late thresholds for a given day."""
+    if target_date.weekday() == 5 and is_working_day(target_date, settings):
+        start_time = settings.saturday_start_time or datetime.time(11, 0)
+        end_time = settings.saturday_end_time or datetime.time(16, 0)
+        grace = settings.saturday_grace_period_minutes
+        if grace is None:
+            grace = 15
+        late_after = settings.saturday_late_after_minutes
+        if late_after is None:
+            late_after = 30
+        return start_time, end_time, grace, late_after
+
+    return (
+        shift.start_time,
+        shift.end_time,
+        shift.grace_period_minutes,
+        shift.late_after_minutes,
+    )
+
+
 def schedule_attendance_recalc(
     start_date: datetime.date = None,
     end_date: datetime.date = None,
@@ -420,9 +462,10 @@ class SyncService:
             end_date = now.date()
 
         chunk_start = start_date
+        settings, _ = cls.initialize_defaults(db)
         while chunk_start <= end_date:
             chunk_end = min(cls._month_end(chunk_start), end_date)
-            cls._process_daily_attendance_range(db, chunk_start, chunk_end, now)
+            cls._process_daily_attendance_range(db, chunk_start, chunk_end, now, settings)
             chunk_start = chunk_end + datetime.timedelta(days=1)
 
     @classmethod
@@ -432,6 +475,7 @@ class SyncService:
         start_date: datetime.date,
         end_date: datetime.date,
         now: datetime.datetime,
+        settings: DeviceSettings,
     ):
         employees = db.query(Employee).filter_by(is_active=True).all()
         if not employees:
@@ -470,7 +514,7 @@ class SyncService:
                 pending_writes = 0
 
         for target_date in dates:
-            if target_date.weekday() >= 5:
+            if not is_working_day(target_date, settings):
                 continue
 
             for emp in employees:
@@ -479,12 +523,16 @@ class SyncService:
                 if not shift:
                     continue
 
+                start_time, end_time, grace_period_minutes, late_after_minutes = get_effective_shift_times(
+                    shift, target_date, settings
+                )
+
                 daily_rec = existing_recs_map.get((emp.id, target_date))
                 leave = leave_map.get((emp.id, target_date))
 
                 is_past_day = target_date < now.date()
-                shift_start_dt = datetime.datetime.combine(target_date, shift.start_time)
-                late_limit_dt = shift_start_dt + datetime.timedelta(minutes=shift.late_after_minutes)
+                shift_start_dt = datetime.datetime.combine(target_date, start_time)
+                late_limit_dt = shift_start_dt + datetime.timedelta(minutes=late_after_minutes)
                 is_today_and_late_passed = (target_date == now.date() and now > late_limit_dt)
 
                 # Approved leave overrides absence when employee did not punch
@@ -534,11 +582,11 @@ class SyncService:
                 check_out = logs[-1].timestamp if len(logs) > 1 else None
 
                 ci_time_mins = check_in.hour * 60 + check_in.minute
-                shift_start_mins = shift.start_time.hour * 60 + shift.start_time.minute
+                shift_start_mins = start_time.hour * 60 + start_time.minute
                 late_mins = max(0, ci_time_mins - shift_start_mins)
 
                 status = "Present"
-                if late_mins > shift.grace_period_minutes:
+                if late_mins > grace_period_minutes:
                     status = "Late"
 
                 early_leave_mins = 0
@@ -547,7 +595,7 @@ class SyncService:
 
                 if check_out:
                     co_time_mins = check_out.hour * 60 + check_out.minute
-                    shift_end_mins = shift.end_time.hour * 60 + shift.end_time.minute
+                    shift_end_mins = end_time.hour * 60 + end_time.minute
                     early_leave_mins = max(0, shift_end_mins - co_time_mins)
 
                     if early_leave_mins > 0 and status == "Present":

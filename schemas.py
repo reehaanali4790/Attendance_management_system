@@ -8,6 +8,12 @@ class DeviceSettingsBase(BaseModel):
     port: int
     comm_key: int
     sync_interval_minutes: int
+    saturday_is_working_day: bool = True
+    saturday_start_time: datetime.time = datetime.time(11, 0)
+    saturday_end_time: datetime.time = datetime.time(16, 0)
+    saturday_grace_period_minutes: int = 15
+    saturday_late_after_minutes: int = 30
+    sunday_is_working_day: bool = False
 
 class DeviceSettingsUpdate(DeviceSettingsBase):
     pass

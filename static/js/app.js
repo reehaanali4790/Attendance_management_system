@@ -917,17 +917,53 @@ window.openEditEmployeeModal = async function(id, name, shiftId, departmentId, i
 };
 
 // 7. Settings Page Operations (Device Settings & Shift Settings)
+function formatTimeForApi(value) {
+    if (!value) return value;
+    return value.length === 5 ? `${value}:00` : value;
+}
+
+function getHardwareSettingsPayload() {
+    return {
+        ip_address: document.getElementById("device-ip").value,
+        port: parseInt(document.getElementById("device-port").value),
+        comm_key: parseInt(document.getElementById("device-key").value) || 0,
+        sync_interval_minutes: parseInt(document.getElementById("sync-interval").value)
+    };
+}
+
+function getWorkWeekSettingsPayload() {
+    return {
+        saturday_is_working_day: document.getElementById("saturday-working").checked,
+        saturday_start_time: formatTimeForApi(document.getElementById("saturday-start").value),
+        saturday_end_time: formatTimeForApi(document.getElementById("saturday-end").value),
+        saturday_grace_period_minutes: parseInt(document.getElementById("saturday-grace").value),
+        saturday_late_after_minutes: parseInt(document.getElementById("saturday-late").value),
+        sunday_is_working_day: document.getElementById("sunday-working").checked
+    };
+}
+
+function getFullSettingsPayload() {
+    return {
+        ...getHardwareSettingsPayload(),
+        ...getWorkWeekSettingsPayload()
+    };
+}
+
+function applyWorkWeekSettings(settings) {
+    document.getElementById("saturday-working").checked = settings.saturday_is_working_day !== false;
+    document.getElementById("saturday-start").value = (settings.saturday_start_time || "11:00:00").slice(0, 5);
+    document.getElementById("saturday-end").value = (settings.saturday_end_time || "16:00:00").slice(0, 5);
+    document.getElementById("saturday-grace").value = settings.saturday_grace_period_minutes ?? 15;
+    document.getElementById("saturday-late").value = settings.saturday_late_after_minutes ?? 30;
+    document.getElementById("sunday-working").checked = !!settings.sunday_is_working_day;
+}
+
 function setupSettingsForms() {
     // Save ZK Device connection
     document.getElementById("settings-form").addEventListener("submit", async (e) => {
         e.preventDefault();
         
-        const payload = {
-            ip_address: document.getElementById("device-ip").value,
-            port: parseInt(document.getElementById("device-port").value),
-            comm_key: parseInt(document.getElementById("device-key").value) || 0,
-            sync_interval_minutes: parseInt(document.getElementById("sync-interval").value)
-        };
+        const payload = getFullSettingsPayload();
         
         try {
             const response = await apiFetch(`${API_BASE}/api/settings`, {
@@ -938,7 +974,7 @@ function setupSettingsForms() {
             if (!response.ok) throw new Error("Could not save settings");
             
             const updated = await response.json();
-            alert("Hardware configuration saved successfully. Device will sync immediately.");
+            alert("Hardware configuration saved successfully.");
             updateConnectionStatus(updated.last_sync_status === "Success" ? "CONNECTED" : "DISCONNECTED", updated.last_sync_time);
             
             // Reload countdown and configs
@@ -946,6 +982,27 @@ function setupSettingsForms() {
             
         } catch (error) {
             alert(`Error saving configurations: ${error.message}`);
+        }
+    });
+
+    document.getElementById("work-week-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+
+        const payload = getFullSettingsPayload();
+
+        try {
+            const response = await apiFetch(`${API_BASE}/api/settings`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
+            if (!response.ok) throw new Error("Could not save work week policy");
+
+            await response.json();
+            alert("Work week policy saved. Attendance for this month will be recalculated.");
+            loadDashboardData();
+        } catch (error) {
+            alert(`Error saving work week policy: ${error.message}`);
         }
     });
     
@@ -1033,6 +1090,7 @@ async function loadSettings() {
         document.getElementById("device-port").value = settings.port;
         document.getElementById("device-key").value = settings.comm_key;
         document.getElementById("sync-interval").value = settings.sync_interval_minutes;
+        applyWorkWeekSettings(settings);
         
         // Update connection bar IP
         connectionIp.textContent = `${settings.ip_address}:${settings.port}`;

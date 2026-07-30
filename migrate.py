@@ -54,3 +54,17 @@ def run_migrations(engine):
                     "idx_employees_is_active",
                     "CREATE INDEX IF NOT EXISTS idx_employees_is_active ON employees (is_active)",
                 )
+
+        if "device_settings" in table_names:
+            device_cols = {col["name"] for col in inspector.get_columns("device_settings")}
+            additions = [
+                ("saturday_is_working_day", "BOOLEAN DEFAULT TRUE"),
+                ("saturday_start_time", "TIME DEFAULT '11:00:00'"),
+                ("saturday_end_time", "TIME DEFAULT '16:00:00'"),
+                ("saturday_grace_period_minutes", "INTEGER DEFAULT 15"),
+                ("saturday_late_after_minutes", "INTEGER DEFAULT 30"),
+                ("sunday_is_working_day", "BOOLEAN DEFAULT FALSE"),
+            ]
+            for col_name, col_type in additions:
+                if col_name not in device_cols:
+                    conn.execute(text(f"ALTER TABLE device_settings ADD COLUMN {col_name} {col_type}"))

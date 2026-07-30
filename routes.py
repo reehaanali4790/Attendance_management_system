@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from database import get_db
 import models
 import schemas
-from sync_service import SyncService, schedule_attendance_recalc, schedule_recent_attendance_recalc
+from sync_service import SyncService, schedule_attendance_recalc, schedule_recent_attendance_recalc, is_working_day
 from auth import get_current_user
 import datetime
 from typing import List, Optional
@@ -173,7 +173,7 @@ def get_dashboard(db: Session = Depends(get_db)):
     weekly_trend = {}
     for day_offset in range(7, -1, -1):
         d = today - datetime.timedelta(days=day_offset)
-        if d.weekday() >= 5:
+        if not is_working_day(d, settings):
             continue
         d_str = d.strftime("%Y-%m-%d")
         weekly_trend[d_str] = trend_by_date.get(
@@ -555,13 +555,41 @@ def update_settings(payload: schemas.DeviceSettingsUpdate, db: Session = Depends
     if not settings:
         settings = models.DeviceSettings()
         db.add(settings)
+
+    hardware_changed = (
+        settings.ip_address != payload.ip_address
+        or settings.port != payload.port
+        or settings.comm_key != payload.comm_key
+        or settings.sync_interval_minutes != payload.sync_interval_minutes
+    )
+    work_week_changed = (
+        settings.saturday_is_working_day != payload.saturday_is_working_day
+        or settings.saturday_start_time != payload.saturday_start_time
+        or settings.saturday_end_time != payload.saturday_end_time
+        or settings.saturday_grace_period_minutes != payload.saturday_grace_period_minutes
+        or settings.saturday_late_after_minutes != payload.saturday_late_after_minutes
+        or settings.sunday_is_working_day != payload.sunday_is_working_day
+    )
+
     settings.ip_address = payload.ip_address
     settings.port = payload.port
     settings.comm_key = payload.comm_key
     settings.sync_interval_minutes = payload.sync_interval_minutes
+    settings.saturday_is_working_day = payload.saturday_is_working_day
+    settings.saturday_start_time = payload.saturday_start_time
+    settings.saturday_end_time = payload.saturday_end_time
+    settings.saturday_grace_period_minutes = payload.saturday_grace_period_minutes
+    settings.saturday_late_after_minutes = payload.saturday_late_after_minutes
+    settings.sunday_is_working_day = payload.sunday_is_working_day
     db.commit()
     db.refresh(settings)
-    SyncService.sync(db)
+
+    if hardware_changed:
+        SyncService.sync(db)
+    elif work_week_changed:
+        today = datetime.date.today()
+        schedule_attendance_recalc(today.replace(day=1), today)
+
     return settings
 
 
