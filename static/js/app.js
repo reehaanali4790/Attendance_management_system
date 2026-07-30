@@ -175,6 +175,7 @@ function initializeAuthenticatedApp() {
     setupSettingsForms();
     setupEmployeeModal();
     setupDepartmentForm();
+    setupHolidayForm();
     setupLeaveForm();
 
     loadDashboardData();
@@ -238,6 +239,7 @@ function switchTab(tabName, options = {}) {
     } else if (tabName === "settings") {
         loadSettings();
         loadAllShifts();
+        loadHolidays();
     }
 }
 
@@ -1110,6 +1112,87 @@ async function loadSettings() {
         console.error(error);
     }
 }
+
+function formatDisplayDate(isoDate) {
+    if (!isoDate) return "";
+    const [year, month, day] = isoDate.split("-");
+    return `${day}/${month}/${year}`;
+}
+
+function setupHolidayForm() {
+    document.getElementById("holiday-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const payload = {
+            holiday_date: document.getElementById("holiday-date").value,
+            name: document.getElementById("holiday-name").value.trim() || null
+        };
+
+        try {
+            const response = await apiFetch(`${API_BASE}/api/holidays`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.detail || "Could not add holiday");
+            }
+            document.getElementById("holiday-date").value = "";
+            document.getElementById("holiday-name").value = "";
+            await loadHolidays();
+            alert("Holiday added. Attendance for that date will be recalculated.");
+        } catch (error) {
+            alert(`Error: ${error.message}`);
+        }
+    });
+}
+
+async function loadHolidays() {
+    const listEl = document.getElementById("holidays-list");
+    if (!listEl) return;
+
+    listEl.innerHTML = "<p>Loading holidays...</p>";
+    try {
+        const year = new Date().getFullYear();
+        const response = await apiFetch(`${API_BASE}/api/holidays?start_date=${year}-01-01&end_date=${year + 1}-12-31`);
+        if (!response.ok) throw new Error("Could not load holidays");
+        const holidays = await response.json();
+
+        if (holidays.length === 0) {
+            listEl.innerHTML = `<p class="page-subtitle">No company holidays added for ${year} yet.</p>`;
+            return;
+        }
+
+        listEl.innerHTML = "";
+        holidays.forEach(holiday => {
+            const item = document.createElement("div");
+            item.className = "shift-item";
+            const label = holiday.name ? `${formatDisplayDate(holiday.holiday_date)} · ${holiday.name}` : formatDisplayDate(holiday.holiday_date);
+            item.innerHTML = `
+                <div class="shift-info-left">
+                    <span class="shift-item-name">${label}</span>
+                    <span class="shift-item-times">Shows as HOLIDAY in exports</span>
+                </div>
+                <button class="btn btn-secondary" style="padding:0.35rem 0.75rem; font-size:0.75rem;" onclick="deleteHoliday(${holiday.id})">Delete</button>
+            `;
+            listEl.appendChild(item);
+        });
+    } catch (error) {
+        listEl.innerHTML = `<p class="page-subtitle">Could not load holidays.</p>`;
+        console.error(error);
+    }
+}
+
+window.deleteHoliday = async function(holidayId) {
+    if (!confirm("Remove this company holiday?")) return;
+    try {
+        const response = await apiFetch(`${API_BASE}/api/holidays/${holidayId}`, { method: "DELETE" });
+        if (!response.ok) throw new Error("Could not delete holiday");
+        await loadHolidays();
+    } catch (error) {
+        alert(`Error: ${error.message}`);
+    }
+};
 
 async function fetchAllShifts() {
     const response = await apiFetch(`${API_BASE}/api/shifts`);

@@ -44,16 +44,23 @@ def _apply_row_style(ws, row_idx: int, highlight: bool = False) -> None:
             cell.fill = BLUE_FILL
 
 
-def _is_holiday_row(record: Optional[DailyAttendance]) -> bool:
-    return bool(record and record.status == "On Leave")
+def _is_company_holiday(day: datetime.date, holiday_dates: set[datetime.date]) -> bool:
+    return day in holiday_dates
 
 
 def _is_late(record: Optional[DailyAttendance]) -> bool:
     return bool(record and record.status == "Late")
 
 
-def _is_absent(record: Optional[DailyAttendance], day: datetime.date, today: datetime.date) -> bool:
-    if record and record.status == "Absent":
+def _is_absent(
+    record: Optional[DailyAttendance],
+    day: datetime.date,
+    today: datetime.date,
+    holiday_dates: set[datetime.date],
+) -> bool:
+    if day in holiday_dates:
+        return False
+    if record and record.status in {"Absent", "On Leave"}:
         return True
     if day >= today:
         return False
@@ -68,7 +75,9 @@ def build_individual_attendance_workbook(
     settings: DeviceSettings,
     start_date: datetime.date,
     end_date: datetime.date,
+    holiday_dates: Optional[set[datetime.date]] = None,
 ) -> io.BytesIO:
+    holiday_dates = holiday_dates or set()
     wb = Workbook()
     ws = wb.active
     ws.title = _safe_sheet_name(employee.name)
@@ -86,16 +95,17 @@ def build_individual_attendance_workbook(
 
     day = start_date
     while day <= end_date:
-        if not is_working_day(day, settings):
+        is_holiday = _is_company_holiday(day, holiday_dates)
+        if not is_holiday and not is_working_day(day, settings):
             day += datetime.timedelta(days=1)
             continue
 
         record = records_by_date.get(day)
-        highlight = day.weekday() == 5 or _is_holiday_row(record)
+        highlight = day.weekday() == 5 or is_holiday
         late_mark = ""
         absent_mark = ""
 
-        if _is_holiday_row(record):
+        if is_holiday:
             ws.cell(row=row_idx, column=1, value=_fmt_date(day))
             ws.cell(row=row_idx, column=2, value=employee.name)
             ws.merge_cells(start_row=row_idx, start_column=3, end_row=row_idx, end_column=4)
@@ -103,7 +113,7 @@ def build_individual_attendance_workbook(
             holiday_cell.alignment = CENTER
         else:
             late_flag = _is_late(record)
-            absent_flag = _is_absent(record, day, today)
+            absent_flag = _is_absent(record, day, today, holiday_dates)
             if late_flag:
                 late_mark = "YES"
                 total_late += 1

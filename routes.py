@@ -601,6 +601,46 @@ def force_sync(full: bool = False, db: Session = Depends(get_db)):
     return result
 
 
+# --- Company Holidays ---
+@router.get("/api/holidays", response_model=List[schemas.CompanyHolidayResponse])
+def get_holidays(
+    start_date: Optional[datetime.date] = None,
+    end_date: Optional[datetime.date] = None,
+    db: Session = Depends(get_db),
+):
+    query = db.query(models.CompanyHoliday)
+    if start_date:
+        query = query.filter(models.CompanyHoliday.holiday_date >= start_date)
+    if end_date:
+        query = query.filter(models.CompanyHoliday.holiday_date <= end_date)
+    return query.order_by(models.CompanyHoliday.holiday_date).all()
+
+
+@router.post("/api/holidays", response_model=schemas.CompanyHolidayResponse)
+def create_holiday(payload: schemas.CompanyHolidayCreate, db: Session = Depends(get_db)):
+    existing = db.query(models.CompanyHoliday).filter_by(holiday_date=payload.holiday_date).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="A holiday already exists on this date")
+    holiday = models.CompanyHoliday(**payload.model_dump())
+    db.add(holiday)
+    db.commit()
+    db.refresh(holiday)
+    schedule_attendance_recalc(payload.holiday_date, payload.holiday_date)
+    return holiday
+
+
+@router.delete("/api/holidays/{holiday_id}")
+def delete_holiday(holiday_id: int, db: Session = Depends(get_db)):
+    holiday = db.query(models.CompanyHoliday).filter_by(id=holiday_id).first()
+    if not holiday:
+        raise HTTPException(status_code=404, detail="Holiday not found")
+    holiday_date = holiday.holiday_date
+    db.delete(holiday)
+    db.commit()
+    schedule_attendance_recalc(holiday_date, holiday_date)
+    return {"status": "deleted"}
+
+
 @router.get("/api/attendance/export")
 def export_attendance(
     start_date: Optional[datetime.date] = None,
@@ -617,6 +657,7 @@ def export_attendance(
         build_individual_attendance_workbook,
         individual_export_filename,
     )
+    from holiday_service import load_holiday_dates
 
     if not start_date:
         start_date = datetime.date.today().replace(day=1)
@@ -647,12 +688,14 @@ def export_attendance(
             models.DailyAttendance.date <= end_date,
         ).all()
         records_by_date = {record.date: record for record in records}
+        holiday_dates = load_holiday_dates(db, start_date, end_date)
         stream = build_individual_attendance_workbook(
             target_employee,
             records_by_date,
             settings,
             start_date,
             end_date,
+            holiday_dates=holiday_dates,
         )
         filename = individual_export_filename(target_employee, start_date, end_date)
         return StreamingResponse(

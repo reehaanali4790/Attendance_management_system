@@ -204,6 +204,21 @@ class DashboardSummary(BaseModel):
     department_stats: Optional[List[dict]] = None
 
 
+# --- Company Holidays ---
+class CompanyHolidayCreate(BaseModel):
+    holiday_date: datetime.date
+    name: Optional[str] = None
+
+
+class CompanyHolidayResponse(BaseModel):
+    id: int
+    holiday_date: datetime.date
+    name: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
 # --- Authentication ---
 class TokenResponse(BaseModel):
     access_token: str

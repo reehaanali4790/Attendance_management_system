@@ -21,6 +21,14 @@ class DeviceSettings(Base):
     saturday_late_after_minutes = Column(Integer, default=30)
     sunday_is_working_day = Column(Boolean, default=False)
 
+class CompanyHoliday(Base):
+    __tablename__ = "company_holidays"
+
+    id = Column(Integer, primary_key=True, index=True)
+    holiday_date = Column(Date, unique=True, nullable=False, index=True)
+    name = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
 class Department(Base):
     __tablename__ = "departments"
 

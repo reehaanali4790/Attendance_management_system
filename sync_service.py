@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from models import DeviceSettings, Employee, Shift, AttendanceLog, DailyAttendance, LeaveRequest, LeaveType, Department
 from zk_service import ZKService
 from database import DATABASE_URL
+from holiday_service import load_holiday_dates
 
 logger = logging.getLogger("SyncService")
 
@@ -501,6 +502,7 @@ class SyncService:
         existing_recs_map = {(r.employee_id, r.date): r for r in existing_recs}
 
         leave_map = cls._build_leave_map(db, start_date, end_date)
+        holiday_dates = load_holiday_dates(db, start_date, end_date)
 
         delta = end_date - start_date
         dates = [start_date + datetime.timedelta(days=i) for i in range(delta.days + 1)]
@@ -514,6 +516,14 @@ class SyncService:
                 pending_writes = 0
 
         for target_date in dates:
+            if target_date in holiday_dates:
+                for emp in employees:
+                    daily_rec = existing_recs_map.get((emp.id, target_date))
+                    if daily_rec:
+                        db.delete(daily_rec)
+                        del existing_recs_map[(emp.id, target_date)]
+                        _touch_write()
+                continue
             if not is_working_day(target_date, settings):
                 continue
 

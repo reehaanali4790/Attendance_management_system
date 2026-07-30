@@ -585,6 +585,35 @@
                             </div>
                         </div>
 
+                        <!-- Company Holidays -->
+                        <div class="card glass-card">
+                            <div class="card-header">
+                                <h3 class="card-title">Company Holidays</h3>
+                                <p class="card-subtitle">Office-wide holidays show as HOLIDAY in individual attendance exports. Approved employee leave counts as absent.</p>
+                            </div>
+                            <div class="card-body">
+                                <form id="holiday-form" class="settings-form">
+                                    <div class="form-row">
+                                        <div class="form-group">
+                                            <label for="holiday-date">Holiday Date</label>
+                                            <input type="date" id="holiday-date" class="form-control" required>
+                                        </div>
+                                        <div class="form-group flex-2">
+                                            <label for="holiday-name">Holiday Name (optional)</label>
+                                            <input type="text" id="holiday-name" placeholder="e.g. Pakistan Day, Eid" class="form-control">
+                                        </div>
+                                    </div>
+                                    <div class="settings-actions">
+                                        <button type="submit" class="btn btn-primary" id="btn-save-holiday">Add Holiday</button>
+                                    </div>
+                                </form>
+                                <hr class="divider">
+                                <div id="holidays-list" class="shifts-list-container">
+                                    <p>Loading holidays...</p>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- Shift Times Config Form -->
                         <div class="card glass-card">
                             <div class="card-header">
@@ -685,6 +714,6 @@
     </div>
 
     <!-- JS Logic -->
-    <script src="/js/app.js?v=20260730b"></script>
+    <script src="/js/app.js?v=20260730c"></script>
 </body>
 </html>
