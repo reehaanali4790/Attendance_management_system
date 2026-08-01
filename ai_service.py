@@ -119,11 +119,22 @@ NAME_FILLER_WORDS = frozenset({
     "ilawa", "siwa", "besides", "except", "chor", "chhod", "other", "than",
 })
 
-RANKING_MARKERS = (
+SUPERLATIVE_RANKING_MARKERS = (
     "sabse zyada", "sab se zyada", "sabse ziada", "sab se ziada",
-    "most ", "highest", "top ", "kis ne ki", "kisne ki", "kaun", "kon ",
-    "ranking", "kitne log",
+    "most ", "highest", "top ", "kis ne ki", "kisne ki",
+    "ranking", "sab se zyada der", "sabse zyada der",
 )
+
+LIST_MARKERS = (
+    "kon kon", "kaun kaun", "koun koun", "who all", "who are", "who were",
+)
+
+COUNT_MARKERS = (
+    "kitne log", "kitne", "how many",
+)
+
+# Backward-compatible alias used in a few places.
+RANKING_MARKERS = SUPERLATIVE_RANKING_MARKERS
 
 EXCLUSION_MARKERS = (
     "ke ilawa", "k ilawa", "ke siwa", "k siwa", "ilawa", "siwa",
@@ -131,9 +142,40 @@ EXCLUSION_MARKERS = (
 )
 
 
-def _is_ranking_question(text: str) -> bool:
+def _is_superlative_ranking_question(text: str, understanding: dict | None = None) -> bool:
     q = (text or "").lower()
-    return any(marker in q for marker in RANKING_MARKERS)
+    if understanding and understanding.get("metric") == "ranking":
+        return True
+    if any(marker in q for marker in SUPERLATIVE_RANKING_MARKERS):
+        return True
+    if "zyada" in q and any(word in q for word in ("kaun", "kon", "kis", "who")):
+        return True
+    return False
+
+
+def _is_list_question(text: str) -> bool:
+    q = (text or "").lower()
+    if any(marker in q for marker in LIST_MARKERS):
+        return True
+    if _is_superlative_ranking_question(q):
+        return False
+    if _is_count_question(q):
+        return False
+    if any(marker in q for marker in ("who is", "who was", "who came", "kaun", "kon")):
+        return True
+    return False
+
+
+def _is_count_question(text: str) -> bool:
+    q = (text or "").lower()
+    if "kis ne" in q or "kisne" in q:
+        return False
+    return any(marker in q for marker in COUNT_MARKERS)
+
+
+def _is_ranking_question(text: str) -> bool:
+    """True only for superlative/ranking questions, not list-all questions."""
+    return _is_superlative_ranking_question(text)
 
 
 def _is_exclusion_question(text: str) -> bool:
@@ -282,7 +324,9 @@ CRITICAL RULES:
    resolved_question: "Bashir ne pichle saal kitni chutiyan ki?"
 
 3. GENERAL vs SPECIFIC:
-   - general: who is late/absent, sabse zyada late kaun, sabse zyada chutiyan, kitne log, ranking across active employees
+   - general LIST: "aaj kon kon late aaya", "who is absent today" — return ALL matching employees (not just one)
+   - general RANKING: "sabse zyada late kaun", "sab se zyada chutiyan kis ne ki" — return the TOP one only
+   - general COUNT: "kitne log late aaye" — return a number
    - specific_person: question about one named active employee's attendance/leaves/status
    - EXCLUSION RANKING (CRITICAL): "Hassan aur Raihan ke ilawa sab se zyada chutiyan kis ne ki?" is GENERAL ranking, NOT specific_person.
      Put excluded names in `excluded_employees` (exact DB spellings) and leave `employees` as [].
@@ -292,6 +336,8 @@ CRITICAL RULES:
    For exclusion ranking, use `excluded_employees` instead — do NOT put excluded names in `employees`.
 
 5. METRIC values: leaves, late, present, absent, work_hours, ranking, count, check_in, other
+   - Use metric=ranking ONLY when user asks sabse zyada / most / top / kis ne ki style superlative questions.
+   - Use metric=late/absent/present for "kon kon" / "who is" list questions even if multiple people are expected.
 
 6. TIME_PERIOD values: today, yesterday, this_year, last_year, this_month, last_month, other, null
 
@@ -1012,10 +1058,13 @@ RULES FOR QUERY GENERATION:
    - NEVER apply this rule to GENERAL questions like "who is late" or "sabse zyada late kaun aaya" — those are NOT person names!
    - NEVER generate a query assuming a non-existent person is absent!
 
-6. SUPERLATIVE & RANKING QUERIES:
+6. SUPERLATIVE & RANKING QUERIES (ONLY when user asks sabse zyada / most / top):
    - "sabse zyada late" / "most late" / "latest arrival" / "sab se zyada der se":
      Filter today's late records, ORDER BY `daily_attendance.late_minutes DESC` or `daily_attendance.check_in DESC`, LIMIT 1.
      Example: `SELECT employees.name, daily_attendance.late_minutes, daily_attendance.check_in FROM daily_attendance JOIN employees ON daily_attendance.employee_id = employees.id WHERE daily_attendance.date = '{today.isoformat()}' AND daily_attendance.status = 'Late' ORDER BY daily_attendance.late_minutes DESC LIMIT 1`
+   - LIST questions like "aaj kon kon late aaya" / "who is late today":
+     Return ALL matching names — NO LIMIT 1.
+     Example: `SELECT employees.name FROM daily_attendance JOIN employees ON daily_attendance.employee_id = employees.id WHERE daily_attendance.date = '{today.isoformat()}' AND daily_attendance.status = 'Late' AND employees.is_active IS TRUE`
    - "sabse zyada work hours" / "highest work hours":
      ORDER BY `daily_attendance.work_hours DESC` with appropriate date filter.
    - "kitne log late" / "how many late":
@@ -1128,8 +1177,21 @@ def generate_sql(user_query: str, conversation_history: list = None) -> dict:
             "ALWAYS return valid SQL.\n"
         )
     elif query_intent == "general":
+        list_note = ""
+        if _is_list_question(resolved_query) or _is_list_question(latin_query):
+            list_note = (
+                " This is a LIST question (kon kon / who all) — return ALL matching employee names. "
+                "Do NOT use LIMIT 1. "
+            )
+        elif _is_superlative_ranking_question(resolved_query, understanding) or _is_superlative_ranking_question(latin_query, understanding):
+            list_note = (
+                " This is a RANKING/superlative question — return ONE top result with ORDER BY + LIMIT 1. "
+            )
+        elif _is_count_question(resolved_query) or _is_count_question(latin_query):
+            list_note = " This is a COUNT question — use COUNT(*). "
         match_hint = (
             f"\nUNDERSTANDING: GENERAL question — metric={metric}, time_period={understanding.get('time_period')}. "
+            f"{list_note}"
             "Generate SQL across ACTIVE employees only (employees.is_active = 1). "
             "Do NOT treat conversational words as employee names. "
             "Exclude inactive/former staff from rankings and counts. "
@@ -1398,6 +1460,117 @@ def fix_exclusion_not_in_case(sql_query: str, excluded_names: list) -> str:
     return sql
 
 
+def _extract_name_list(query_results: list) -> list[str]:
+    names = []
+    for row in query_results or []:
+        for key, value in row.items():
+            key_lower = key.lower()
+            if value is not None and ("name" in key_lower or key_lower == "employee"):
+                name = str(value).strip()
+                if name and name not in names:
+                    names.append(name)
+                break
+    return names
+
+
+def _join_names_natural(names: list[str], lang: str) -> str:
+    if not names:
+        return ""
+    if len(names) == 1:
+        return names[0]
+    if lang == "urdu_script":
+        return "، ".join(names[:-1]) + f" اور {names[-1]}"
+    if lang == "roman_urdu":
+        return ", ".join(names[:-1]) + f" aur {names[-1]}"
+    return ", ".join(names[:-1]) + f" and {names[-1]}"
+
+
+def _format_list_answer(
+    query_results: list,
+    understanding: dict,
+    user_query: str,
+) -> str | None:
+    names = _extract_name_list(query_results)
+    lang = understanding.get("language") or detect_query_language(user_query)
+    metric = understanding.get("metric") or "other"
+
+    if not names:
+        if lang == "urdu_script":
+            if metric == "late":
+                return "آج کوئی بھی لیٹ نہیں آیا۔"
+            if metric == "absent":
+                return "آج کوئی بھی غیر حاضر نہیں ہے۔"
+            if metric == "present":
+                return "آج کوئی بھی حاضر نہیں ہے۔"
+        if lang == "roman_urdu":
+            if metric == "late":
+                return "Aaj koi bhi late nahi aaya."
+            if metric == "absent":
+                return "Aaj koi bhi absent nahi hai."
+            if metric == "present":
+                return "Aaj koi bhi present nahi hai."
+        return "No matching employees found."
+
+    joined = _join_names_natural(names, lang)
+    if lang == "urdu_script":
+        if metric == "late":
+            return f"آج لیٹ آنے والے: {joined}۔"
+        if metric == "absent":
+            return f"آج غیر حاضر: {joined}۔"
+        if metric == "present":
+            return f"آج حاضر: {joined}۔"
+        return f"نتائج: {joined}۔"
+    if lang == "roman_urdu":
+        if metric == "late":
+            return f"Aaj late aane wale: {joined}."
+        if metric == "absent":
+            return f"Aaj absent hain: {joined}."
+        if metric == "present":
+            return f"Aaj present hain: {joined}."
+        return f"Results: {joined}."
+    if metric == "late":
+        return f"Late today: {joined}."
+    if metric == "absent":
+        return f"Absent today: {joined}."
+    if metric == "present":
+        return f"Present today: {joined}."
+    return f"Results: {joined}."
+
+
+def _format_count_answer(
+    query_results: list,
+    understanding: dict,
+    user_query: str,
+) -> str | None:
+    count = _extract_scalar_count(query_results)
+    if count is None:
+        count = len(_extract_name_list(query_results))
+    lang = understanding.get("language") or detect_query_language(user_query)
+    metric = understanding.get("metric") or "other"
+
+    if lang == "urdu_script":
+        if metric == "late":
+            return f"آج {count} افراد لیٹ آئے۔"
+        if metric == "absent":
+            return f"آج {count} افراد غیر حاضر ہیں۔"
+        if metric in ("leaves", "other"):
+            return f"کل {count}۔"
+        return f"کل {count}۔"
+    if lang == "roman_urdu":
+        if metric == "late":
+            return f"Aaj {count} log late aaye."
+        if metric == "absent":
+            return f"Aaj {count} log absent hain."
+        if metric in ("leaves", "other"):
+            return f"Kul {count}."
+        return f"Kul {count}."
+    if metric == "late":
+        return f"{count} employee(s) were late today."
+    if metric == "absent":
+        return f"{count} employee(s) are absent today."
+    return f"Total: {count}."
+
+
 def _extract_ranking_row(query_results: list) -> tuple[str | None, int | None]:
     if not query_results:
         return None, None
@@ -1450,6 +1623,8 @@ def _format_ranking_answer(
         return f"{excluded_clause}{name} has the most leave days ({count})."
 
     if lang == "roman_urdu":
+        if metric == "late":
+            return f"{excluded_clause}aaj sab se zyada late {name} aaya."
         return f"{excluded_clause}sab se zyada {name}."
     return f"{excluded_clause}top result: {name}."
 
@@ -1473,16 +1648,34 @@ def synthesize_answer(
     employee_confirmed = bool(candidate_matches) and bool(sql_query) and query_intent != "general"
     count_val = _extract_scalar_count(query_results)
     language_rule = _language_instruction(user_query, understanding.get("language"))
+    answer_source = understanding.get("resolved_question") or resolved_query or user_query
 
     if query_intent == "general" and query_results:
-        deterministic = _format_ranking_answer(
-            query_results,
-            understanding,
-            user_query,
-            metric=understanding.get("metric", "other"),
-        )
-        if deterministic:
-            return deterministic
+        if _is_count_question(answer_source) or _is_count_question(user_query):
+            deterministic = _format_count_answer(query_results, understanding, user_query)
+            if deterministic:
+                return deterministic
+        elif (
+            _is_superlative_ranking_question(answer_source, understanding)
+            or _is_superlative_ranking_question(user_query, understanding)
+            or understanding.get("excluded_employees")
+        ):
+            deterministic = _format_ranking_answer(
+                query_results,
+                understanding,
+                user_query,
+                metric=understanding.get("metric", "other"),
+            )
+            if deterministic:
+                return deterministic
+        else:
+            deterministic = _format_list_answer(query_results, understanding, user_query)
+            if deterministic:
+                return deterministic
+    elif query_intent == "general" and not query_results:
+        empty_list = _format_list_answer([], understanding, user_query)
+        if empty_list:
+            return empty_list
 
     client = get_openai_client()
     today = datetime.date.today().isoformat()
@@ -1499,9 +1692,11 @@ CRITICAL RULES FOR CONVERSATIONAL SYNTHESIS:
    - Speak naturally as if telling a colleague the answer verbally.
 
 2. GENERAL vs SPECIFIC QUESTIONS:
-   - For GENERAL questions (who is late, who was most late, sabse zyada chutiyan, how many absent): answer with the SQL results directly.
-     Results only include currently ACTIVE employees — never mention inactive/former staff for rankings.
-     Name the employee(s) from the results. NEVER say "no employee named [phrase] exists" for general questions.
+   - For GENERAL LIST questions (kon kon late, who is absent today): list ALL names from SQL results.
+   - For GENERAL RANKING questions (sabse zyada late kaun): answer with the single top result only.
+   - For GENERAL COUNT questions (kitne log late): give the number.
+   - Results only include currently ACTIVE employees — never mention inactive/former staff for rankings.
+   - Name the employee(s) from the results. NEVER say "no employee named [phrase] exists" for general questions.
    - For SPECIFIC-PERSON questions only: apply the non-existent employee rule below.
 
 3. NON-EXISTENT EMPLOYEE VS ZERO RESULTS (CRITICAL):
