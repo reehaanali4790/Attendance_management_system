@@ -68,3 +68,13 @@ def run_migrations(engine):
             for col_name, col_type in additions:
                 if col_name not in device_cols:
                     conn.execute(text(f"ALTER TABLE device_settings ADD COLUMN {col_name} {col_type}"))
+
+        if "shifts" in table_names:
+            shift_cols = {col["name"] for col in inspector.get_columns("shifts")}
+            if "is_saturday_shift" not in shift_cols:
+                conn.execute(text("ALTER TABLE shifts ADD COLUMN is_saturday_shift BOOLEAN DEFAULT FALSE"))
+
+        if "employees" in table_names:
+            employee_cols = {col["name"] for col in inspector.get_columns("employees")}
+            if "saturday_shift_id" not in employee_cols:
+                conn.execute(text("ALTER TABLE employees ADD COLUMN saturday_shift_id INTEGER REFERENCES shifts(id)"))

@@ -7,6 +7,7 @@ let nextSyncCountdown = 300; // in seconds
 let countdownTimer = null;
 let trendChart = null;
 let allShifts = [];
+let allSaturdayShifts = [];
 let allDepartments = [];
 let allLeaveTypes = [];
 let allEmployeesCache = [];
@@ -239,6 +240,7 @@ function switchTab(tabName, options = {}) {
     } else if (tabName === "settings") {
         loadSettings();
         loadAllShifts();
+        loadAllSaturdayShifts();
         loadHolidays();
     }
 }
@@ -768,7 +770,7 @@ async function loadAttendanceLogs() {
 async function loadEmployees() {
     const tableBody = document.getElementById("employees-table-body");
     const scopeBanner = document.getElementById("employees-scope-banner");
-    tableBody.innerHTML = `<tr><td colspan="7" class="text-center">Loading employee directory...</td></tr>`;
+    tableBody.innerHTML = `<tr><td colspan="8" class="text-center">Loading employee directory...</td></tr>`;
 
     if (employeeListFilter === "active") {
         scopeBanner.textContent = "Showing active employees only (from dashboard).";
@@ -793,16 +795,20 @@ async function loadEmployees() {
             const emptyMessage = employeeListFilter === "active"
                 ? "No active employees found."
                 : "No employees registered yet. Run sync to load device users.";
-            tableBody.innerHTML = `<tr><td colspan="7" class="text-center">${emptyMessage}</td></tr>`;
+            tableBody.innerHTML = `<tr><td colspan="8" class="text-center">${emptyMessage}</td></tr>`;
             return;
         }
         
         employees.forEach(emp => {
             const shiftName = emp.shift ? emp.shift.name : "Unassigned";
+            const satShiftName = emp.saturday_shift ? emp.saturday_shift.name : "Not scheduled";
             const deptName = emp.department ? emp.department.name : "Unassigned";
             const startStr = emp.shift ? emp.shift.start_time.substring(0, 5) : "";
             const endStr = emp.shift ? emp.shift.end_time.substring(0, 5) : "";
             const shiftTimes = emp.shift ? `${startStr} - ${endStr}` : "-";
+            const satStartStr = emp.saturday_shift ? emp.saturday_shift.start_time.substring(0, 5) : "";
+            const satEndStr = emp.saturday_shift ? emp.saturday_shift.end_time.substring(0, 5) : "";
+            const satShiftTimes = emp.saturday_shift ? `${satStartStr} - ${satEndStr}` : "-";
             const roleLabel = emp.privilege === 14 ? "Admin" : "Standard User";
             const statusBadgeClass = emp.is_active ? "bg-green-badge" : "bg-red-badge";
             const statusLabel = emp.is_active ? "Active" : "Inactive";
@@ -814,10 +820,11 @@ async function loadEmployees() {
                 <td><code class="conn-ip">${emp.user_id}</code></td>
                 <td>${deptName}</td>
                 <td>${shiftName}<br><small class="page-subtitle">${shiftTimes}</small></td>
+                <td>${satShiftName}<br><small class="page-subtitle">${satShiftTimes}</small></td>
                 <td>${roleLabel}</td>
                 <td><span class="badge ${statusBadgeClass}">${statusLabel}</span></td>
                 <td>
-                    <button class="btn btn-secondary btn-sm" onclick="openEditEmployeeModal(${emp.id}, '${safeName}', ${emp.shift_id || 'null'}, ${emp.department_id || 'null'}, ${emp.is_active})">
+                    <button class="btn btn-secondary btn-sm" onclick="openEditEmployeeModal(${emp.id}, '${safeName}', ${emp.shift_id || 'null'}, ${emp.saturday_shift_id || 'null'}, ${emp.department_id || 'null'}, ${emp.is_active})">
                         Configure
                     </button>
                 </td>
@@ -827,7 +834,7 @@ async function loadEmployees() {
         
     } catch (error) {
         console.error("Employee list error:", error);
-        tableBody.innerHTML = `<tr><td colspan="7" class="text-center text-glow-red">Error: ${error.message}</td></tr>`;
+        tableBody.innerHTML = `<tr><td colspan="8" class="text-center text-glow-red">Error: ${error.message}</td></tr>`;
     }
 }
 
@@ -852,6 +859,7 @@ function setupEmployeeModal() {
         const saveBtn = e.target.querySelector('button[type="submit"]');
         const empId = document.getElementById("edit-emp-id").value;
         const shiftId = document.getElementById("edit-emp-shift").value;
+        const saturdayShiftId = document.getElementById("edit-emp-saturday-shift").value;
         const deptId = document.getElementById("edit-emp-department").value;
         const isActive = document.getElementById("edit-emp-active").checked;
 
@@ -871,6 +879,7 @@ function setupEmployeeModal() {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     shift_id: parseInt(shiftId, 10),
+                    saturday_shift_id: saturdayShiftId ? parseInt(saturdayShiftId, 10) : 0,
                     department_id: deptId ? parseInt(deptId, 10) : 0,
                     is_active: isActive
                 })
@@ -895,15 +904,13 @@ function setupEmployeeModal() {
     });
 }
 
-window.openEditEmployeeModal = async function(id, name, shiftId, departmentId, isActive) {
+window.openEditEmployeeModal = async function(id, name, shiftId, saturdayShiftId, departmentId, isActive) {
     const modal = document.getElementById("employee-modal");
-    if (!allShifts.length) {
-        try {
-            await fetchAllShifts();
-        } catch (error) {
-            alert(`Could not load shifts: ${error.message}`);
-            return;
-        }
+    try {
+        await Promise.all([fetchAllShifts(), fetchAllSaturdayShifts()]);
+    } catch (error) {
+        alert(`Could not load shifts: ${error.message}`);
+        return;
     }
 
     document.getElementById("edit-emp-id").value = id;
@@ -913,7 +920,7 @@ window.openEditEmployeeModal = async function(id, name, shiftId, departmentId, i
     const shiftSelect = document.getElementById("edit-emp-shift");
     shiftSelect.innerHTML = "";
     if (!allShifts.length) {
-        shiftSelect.innerHTML = `<option value="">No shifts configured — add one in Settings</option>`;
+        shiftSelect.innerHTML = `<option value="">No weekday shifts configured — add one in Settings</option>`;
     } else {
         allShifts.forEach(shift => {
             const option = document.createElement("option");
@@ -923,6 +930,16 @@ window.openEditEmployeeModal = async function(id, name, shiftId, departmentId, i
             shiftSelect.appendChild(option);
         });
     }
+
+    const saturdaySelect = document.getElementById("edit-emp-saturday-shift");
+    saturdaySelect.innerHTML = `<option value="">Not scheduled on Saturdays</option>`;
+    allSaturdayShifts.forEach(shift => {
+        const option = document.createElement("option");
+        option.value = shift.id;
+        option.textContent = `${shift.name} (${shift.start_time.substring(0, 5)} - ${shift.end_time.substring(0, 5)})`;
+        if (saturdayShiftId && Number(shift.id) === Number(saturdayShiftId)) option.selected = true;
+        saturdaySelect.appendChild(option);
+    });
 
     populateDepartmentSelect("edit-emp-department", true, departmentId, "Unassigned");
 
@@ -947,10 +964,10 @@ function getHardwareSettingsPayload() {
 function getWorkWeekSettingsPayload() {
     return {
         saturday_is_working_day: document.getElementById("saturday-working").checked,
-        saturday_start_time: formatTimeForApi(document.getElementById("saturday-start").value),
-        saturday_end_time: formatTimeForApi(document.getElementById("saturday-end").value),
-        saturday_grace_period_minutes: parseInt(document.getElementById("saturday-grace").value),
-        saturday_late_after_minutes: parseInt(document.getElementById("saturday-late").value),
+        saturday_start_time: "11:00:00",
+        saturday_end_time: "16:00:00",
+        saturday_grace_period_minutes: 15,
+        saturday_late_after_minutes: 30,
         sunday_is_working_day: document.getElementById("sunday-working").checked
     };
 }
@@ -964,10 +981,6 @@ function getFullSettingsPayload() {
 
 function applyWorkWeekSettings(settings) {
     document.getElementById("saturday-working").checked = settings.saturday_is_working_day !== false;
-    document.getElementById("saturday-start").value = (settings.saturday_start_time || "11:00:00").slice(0, 5);
-    document.getElementById("saturday-end").value = (settings.saturday_end_time || "16:00:00").slice(0, 5);
-    document.getElementById("saturday-grace").value = settings.saturday_grace_period_minutes ?? 15;
-    document.getElementById("saturday-late").value = settings.saturday_late_after_minutes ?? 30;
     document.getElementById("sunday-working").checked = !!settings.sunday_is_working_day;
 }
 
@@ -1039,7 +1052,8 @@ function setupSettingsForms() {
             start_time: formattedStart,
             end_time: formattedEnd,
             grace_period_minutes: grace,
-            late_after_minutes: late
+            late_after_minutes: late,
+            is_saturday_shift: false
         };
         
         try {
@@ -1079,6 +1093,62 @@ function setupSettingsForms() {
     document.getElementById("btn-cancel-shift").addEventListener("click", () => {
         resetShiftForm();
     });
+
+    document.getElementById("saturday-shift-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+
+        const id = document.getElementById("saturday-shift-id").value;
+        const name = document.getElementById("saturday-shift-name").value;
+        const start = document.getElementById("saturday-shift-start").value;
+        const end = document.getElementById("saturday-shift-end").value;
+        const grace = parseInt(document.getElementById("saturday-shift-grace").value);
+        const late = parseInt(document.getElementById("saturday-shift-late").value);
+
+        const formattedStart = start.length === 5 ? `${start}:00` : start;
+        const formattedEnd = end.length === 5 ? `${end}:00` : end;
+
+        const payload = {
+            name,
+            start_time: formattedStart,
+            end_time: formattedEnd,
+            grace_period_minutes: grace,
+            late_after_minutes: late,
+            is_saturday_shift: true
+        };
+
+        try {
+            let response;
+            if (id) {
+                response = await apiFetch(`${API_BASE}/api/shifts/${id}`, {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                });
+            } else {
+                response = await apiFetch(`${API_BASE}/api/shifts`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                });
+            }
+
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                const detail = errData.detail || response.statusText || "Could not save Saturday shift";
+                throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+            }
+
+            alert(id ? "Saturday shift updated successfully!" : "New Saturday shift created successfully!");
+            resetSaturdayShiftForm();
+            loadAllSaturdayShifts();
+        } catch (error) {
+            alert(`Error: ${error.message}`);
+        }
+    });
+
+    document.getElementById("btn-cancel-saturday-shift").addEventListener("click", () => {
+        resetSaturdayShiftForm();
+    });
 }
 
 function resetShiftForm() {
@@ -1091,6 +1161,17 @@ function resetShiftForm() {
     
     document.getElementById("btn-save-shift").textContent = "Add Shift Configuration";
     document.getElementById("btn-cancel-shift").style.display = "none";
+}
+
+function resetSaturdayShiftForm() {
+    document.getElementById("saturday-shift-id").value = "";
+    document.getElementById("saturday-shift-name").value = "";
+    document.getElementById("saturday-shift-start").value = "";
+    document.getElementById("saturday-shift-end").value = "";
+    document.getElementById("saturday-shift-grace").value = 15;
+    document.getElementById("saturday-shift-late").value = 30;
+    document.getElementById("btn-save-saturday-shift").textContent = "Add Saturday Shift";
+    document.getElementById("btn-cancel-saturday-shift").style.display = "none";
 }
 
 async function loadSettings() {
@@ -1195,10 +1276,17 @@ window.deleteHoliday = async function(holidayId) {
 };
 
 async function fetchAllShifts() {
-    const response = await apiFetch(`${API_BASE}/api/shifts`);
+    const response = await apiFetch(`${API_BASE}/api/shifts?saturday=false`);
     if (!response.ok) throw new Error("Could not load company shifts");
     allShifts = await response.json();
     return allShifts;
+}
+
+async function fetchAllSaturdayShifts() {
+    const response = await apiFetch(`${API_BASE}/api/shifts?saturday=true`);
+    if (!response.ok) throw new Error("Could not load Saturday shifts");
+    allSaturdayShifts = await response.json();
+    return allSaturdayShifts;
 }
 
 async function loadAllShifts() {
@@ -1228,7 +1316,7 @@ async function loadAllShifts() {
                         (Grace: ${shift.grace_period_minutes}m, Absent limit: ${shift.late_after_minutes}m)
                     </span>
                 </div>
-                <button class="btn btn-secondary" style="padding: 0.35rem 0.75rem; font-size:0.75rem;" onclick="editShift(${shift.id}, '${shift.name}', '${shift.start_time}', '${shift.end_time}', ${shift.grace_period_minutes}, ${shift.late_after_minutes})">
+                <button class="btn btn-secondary" style="padding: 0.35rem 0.75rem; font-size:0.75rem;" onclick="editShift(${shift.id}, '${shift.name.replace(/'/g, "\\'")}', '${shift.start_time}', '${shift.end_time}', ${shift.grace_period_minutes}, ${shift.late_after_minutes})">
                     Modify Time
                 </button>
             `;
@@ -1240,6 +1328,54 @@ async function loadAllShifts() {
         listEl.innerHTML = `<p class="text-glow-red">Error: ${error.message}</p>`;
     }
 }
+
+async function loadAllSaturdayShifts() {
+    const listEl = document.getElementById("saturday-shifts-list");
+    if (!listEl) return;
+    listEl.innerHTML = "<p>Loading Saturday shifts...</p>";
+
+    try {
+        await fetchAllSaturdayShifts();
+        listEl.innerHTML = "";
+
+        if (allSaturdayShifts.length === 0) {
+            listEl.innerHTML = `<p class="page-subtitle">No Saturday shifts configured yet. Add one below, then assign it to employees.</p>`;
+            return;
+        }
+
+        allSaturdayShifts.forEach(shift => {
+            const item = document.createElement("div");
+            item.className = "shift-item";
+            item.innerHTML = `
+                <div class="shift-info-left">
+                    <span class="shift-item-name">${shift.name}</span>
+                    <span class="shift-item-times">
+                        ${shift.start_time.substring(0, 5)} - ${shift.end_time.substring(0, 5)}
+                        (Grace: ${shift.grace_period_minutes}m, Absent limit: ${shift.late_after_minutes}m)
+                    </span>
+                </div>
+                <button class="btn btn-secondary" style="padding: 0.35rem 0.75rem; font-size:0.75rem;" onclick="editSaturdayShift(${shift.id}, '${shift.name.replace(/'/g, "\\'")}', '${shift.start_time}', '${shift.end_time}', ${shift.grace_period_minutes}, ${shift.late_after_minutes})">
+                    Modify Time
+                </button>
+            `;
+            listEl.appendChild(item);
+        });
+    } catch (error) {
+        console.error("Saturday shifts fetch error:", error);
+        listEl.innerHTML = `<p class="text-glow-red">Error: ${error.message}</p>`;
+    }
+}
+
+window.editSaturdayShift = function(id, name, start, end, grace, late) {
+    document.getElementById("saturday-shift-id").value = id;
+    document.getElementById("saturday-shift-name").value = name;
+    document.getElementById("saturday-shift-start").value = start.substring(0, 5);
+    document.getElementById("saturday-shift-end").value = end.substring(0, 5);
+    document.getElementById("saturday-shift-grace").value = grace;
+    document.getElementById("saturday-shift-late").value = late;
+    document.getElementById("btn-save-saturday-shift").textContent = "Save Changes";
+    document.getElementById("btn-cancel-saturday-shift").style.display = "inline-flex";
+};
 
 window.editShift = function(id, name, start, end, grace, late) {
     document.getElementById("shift-id").value = id;

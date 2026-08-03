@@ -55,6 +55,7 @@ class ShiftBase(BaseModel):
     end_time: datetime.time
     grace_period_minutes: int
     late_after_minutes: int
+    is_saturday_shift: bool = False
 
 class ShiftCreate(ShiftBase):
     pass
@@ -76,17 +77,20 @@ class EmployeeBase(BaseModel):
     card_number: Optional[str] = None
     is_active: bool
     shift_id: Optional[int] = None
+    saturday_shift_id: Optional[int] = None
     department_id: Optional[int] = None
 
 class EmployeeUpdate(BaseModel):
     name: Optional[str] = None
     is_active: Optional[bool] = None
     shift_id: Optional[int] = None
+    saturday_shift_id: Optional[int] = None
     department_id: Optional[int] = None
 
 class EmployeeResponse(EmployeeBase):
     id: int
     shift: Optional[ShiftResponse] = None
+    saturday_shift: Optional[ShiftResponse] = None
     department: Optional[DepartmentResponse] = None
 
     class Config:

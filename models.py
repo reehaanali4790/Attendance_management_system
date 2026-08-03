@@ -49,8 +49,18 @@ class Shift(Base):
     end_time = Column(Time, nullable=False)
     grace_period_minutes = Column(Integer, default=15)
     late_after_minutes = Column(Integer, default=30)
+    is_saturday_shift = Column(Boolean, default=False)
     
-    employees = relationship("Employee", back_populates="shift")
+    employees = relationship(
+        "Employee",
+        foreign_keys="Employee.shift_id",
+        back_populates="shift",
+    )
+    saturday_employees = relationship(
+        "Employee",
+        foreign_keys="Employee.saturday_shift_id",
+        back_populates="saturday_shift",
+    )
 
 class Employee(Base):
     __tablename__ = "employees"
@@ -62,9 +72,11 @@ class Employee(Base):
     card_number = Column(String, nullable=True)
     is_active = Column(Boolean, default=True)
     shift_id = Column(Integer, ForeignKey("shifts.id"), nullable=True)
+    saturday_shift_id = Column(Integer, ForeignKey("shifts.id"), nullable=True)
     department_id = Column(Integer, ForeignKey("departments.id"), nullable=True)
     
-    shift = relationship("Shift", back_populates="employees")
+    shift = relationship("Shift", foreign_keys=[shift_id], back_populates="employees")
+    saturday_shift = relationship("Shift", foreign_keys=[saturday_shift_id], back_populates="saturday_employees")
     department = relationship("Department", back_populates="employees")
     daily_attendance = relationship("DailyAttendance", back_populates="employee", cascade="all, delete-orphan")
     leave_requests = relationship("LeaveRequest", back_populates="employee", cascade="all, delete-orphan")

@@ -4,7 +4,7 @@ import logging
 import threading
 from sqlalchemy import func, text
 from sqlalchemy.exc import OperationalError, IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from models import DeviceSettings, Employee, Shift, AttendanceLog, DailyAttendance, LeaveRequest, LeaveType, Department
 from zk_service import ZKService
@@ -48,22 +48,27 @@ def is_working_day(target_date: datetime.date, settings: DeviceSettings) -> bool
 
 
 def get_effective_shift_times(
-    shift: Shift,
+    emp: Employee,
     target_date: datetime.date,
     settings: DeviceSettings,
-) -> tuple[datetime.time, datetime.time, int, int]:
-    """Resolve shift start/end and late thresholds for a given day."""
-    if target_date.weekday() == 5 and is_working_day(target_date, settings):
-        start_time = settings.saturday_start_time or datetime.time(11, 0)
-        end_time = settings.saturday_end_time or datetime.time(16, 0)
-        grace = settings.saturday_grace_period_minutes
-        if grace is None:
-            grace = 15
-        late_after = settings.saturday_late_after_minutes
-        if late_after is None:
-            late_after = 30
-        return start_time, end_time, grace, late_after
+) -> tuple[datetime.time, datetime.time, int, int] | None:
+    """Resolve shift start/end and late thresholds for a given employee and day."""
+    if target_date.weekday() == 5:
+        if not is_working_day(target_date, settings):
+            return None
+        saturday_shift = emp.saturday_shift
+        if not saturday_shift:
+            return None
+        return (
+            saturday_shift.start_time,
+            saturday_shift.end_time,
+            saturday_shift.grace_period_minutes,
+            saturday_shift.late_after_minutes,
+        )
 
+    shift = emp.shift
+    if not shift:
+        return None
     return (
         shift.start_time,
         shift.end_time,
@@ -228,6 +233,19 @@ class SyncService:
             db.commit()
             db.refresh(default_shift)
             logger.info("Initialized default shift: General Shift (09:00 - 17:00)")
+
+        if not db.query(Shift).filter_by(name="Saturday Standard (11-4)").first():
+            saturday_shift = Shift(
+                name="Saturday Standard (11-4)",
+                start_time=datetime.time(11, 0),
+                end_time=datetime.time(16, 0),
+                grace_period_minutes=15,
+                late_after_minutes=30,
+                is_saturday_shift=True,
+            )
+            db.add(saturday_shift)
+            db.commit()
+            logger.info("Initialized default Saturday shift: Saturday Standard (11-4)")
 
         settings = db.query(DeviceSettings).first()
         if not settings:
@@ -478,7 +496,10 @@ class SyncService:
         now: datetime.datetime,
         settings: DeviceSettings,
     ):
-        employees = db.query(Employee).filter_by(is_active=True).all()
+        employees = db.query(Employee).options(
+            joinedload(Employee.shift),
+            joinedload(Employee.saturday_shift),
+        ).filter_by(is_active=True).all()
         if not employees:
             return
 
@@ -529,13 +550,22 @@ class SyncService:
 
             for emp in employees:
                 logs = logs_by_user_date.get((emp.user_id, target_date), [])
-                shift = emp.shift
-                if not shift:
+
+                if target_date.weekday() == 5:
+                    if not emp.saturday_shift:
+                        daily_rec = existing_recs_map.get((emp.id, target_date))
+                        if daily_rec:
+                            db.delete(daily_rec)
+                            del existing_recs_map[(emp.id, target_date)]
+                            _touch_write()
+                        continue
+                elif not emp.shift:
                     continue
 
-                start_time, end_time, grace_period_minutes, late_after_minutes = get_effective_shift_times(
-                    shift, target_date, settings
-                )
+                shift_times = get_effective_shift_times(emp, target_date, settings)
+                if not shift_times:
+                    continue
+                start_time, end_time, grace_period_minutes, late_after_minutes = shift_times
 
                 daily_rec = existing_recs_map.get((emp.id, target_date))
                 leave = leave_map.get((emp.id, target_date))

@@ -310,7 +310,8 @@
                                         <th>Employee</th>
                                         <th>User ID</th>
                                         <th>Department</th>
-                                        <th>Shift</th>
+                                        <th>Weekday Shift</th>
+                                        <th>Saturday Shift</th>
                                         <th>Role</th>
                                         <th>Status</th>
                                         <th>Actions</th>
@@ -318,7 +319,7 @@
                                 </thead>
                                 <tbody id="employees-table-body">
                                     <tr>
-                                        <td colspan="7" class="text-center">Loading employee directory...</td>
+                                        <td colspan="8" class="text-center">Loading employee directory...</td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -537,37 +538,15 @@
                         <div class="card glass-card">
                             <div class="card-header">
                                 <h3 class="card-title">Work Week Policy</h3>
-                                <p class="card-subtitle">Mon–Fri uses each employee's assigned shift. Saturday uses the office hours below.</p>
+                                <p class="card-subtitle">Mon–Fri uses each employee's weekday shift. Saturday uses each employee's assigned Saturday shift (configure below).</p>
                             </div>
                             <div class="card-body">
                                 <form id="work-week-form" class="settings-form">
                                     <div class="form-group">
                                         <label class="checkbox-label">
                                             <input type="checkbox" id="saturday-working" checked>
-                                            Saturday is a working day
+                                            Saturday is a working day (for employees with a Saturday shift assigned)
                                         </label>
-                                    </div>
-
-                                    <div class="form-row">
-                                        <div class="form-group">
-                                            <label for="saturday-start">Saturday Start</label>
-                                            <input type="time" id="saturday-start" value="11:00" class="form-control" required>
-                                        </div>
-                                        <div class="form-group">
-                                            <label for="saturday-end">Saturday End</label>
-                                            <input type="time" id="saturday-end" value="16:00" class="form-control" required>
-                                        </div>
-                                    </div>
-
-                                    <div class="form-row">
-                                        <div class="form-group">
-                                            <label for="saturday-grace">Saturday Grace (Minutes)</label>
-                                            <input type="number" id="saturday-grace" value="15" min="0" class="form-control" required>
-                                        </div>
-                                        <div class="form-group">
-                                            <label for="saturday-late">Saturday Late After (Minutes)</label>
-                                            <input type="number" id="saturday-late" value="30" min="0" class="form-control" required>
-                                        </div>
                                     </div>
 
                                     <div class="form-group">
@@ -575,11 +554,63 @@
                                             <input type="checkbox" id="sunday-working">
                                             Sunday is a working day
                                         </label>
-                                        <small class="form-help">Leave unchecked if Sunday is off. Sunday uses normal shift times when enabled.</small>
+                                        <small class="form-help">Employees without a Saturday shift are not marked present/late/absent on Saturdays.</small>
                                     </div>
 
                                     <div class="settings-actions">
                                         <button type="submit" class="btn btn-primary" id="btn-save-work-week">Save Work Week Policy</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+
+                        <!-- Saturday Shift Management -->
+                        <div class="card glass-card">
+                            <div class="card-header">
+                                <h3 class="card-title">Saturday Shift Management</h3>
+                                <p class="card-subtitle">Create Saturday-only shifts with custom timings, then assign them per employee.</p>
+                            </div>
+                            <div class="card-body">
+                                <div class="shifts-list-container" id="saturday-shifts-list">
+                                    <p>Loading Saturday shifts...</p>
+                                </div>
+
+                                <hr class="divider">
+
+                                <h4 class="form-section-title">Create / Update Saturday Shift</h4>
+                                <form id="saturday-shift-form" class="settings-form">
+                                    <input type="hidden" id="saturday-shift-id">
+
+                                    <div class="form-group">
+                                        <label for="saturday-shift-name">Saturday Shift Name</label>
+                                        <input type="text" id="saturday-shift-name" placeholder="e.g. Saturday Morning (11-4)" class="form-control" required>
+                                    </div>
+
+                                    <div class="form-row">
+                                        <div class="form-group">
+                                            <label for="saturday-shift-start">Start Time</label>
+                                            <input type="time" id="saturday-shift-start" class="form-control" required>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="saturday-shift-end">End Time</label>
+                                            <input type="time" id="saturday-shift-end" class="form-control" required>
+                                        </div>
+                                    </div>
+
+                                    <div class="form-row">
+                                        <div class="form-group">
+                                            <label for="saturday-shift-grace">Grace Period (Minutes)</label>
+                                            <input type="number" id="saturday-shift-grace" value="15" min="0" class="form-control" required>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="saturday-shift-late">Absent Threshold (Minutes)</label>
+                                            <input type="number" id="saturday-shift-late" value="30" min="0" class="form-control" required>
+                                        </div>
+                                    </div>
+
+                                    <div class="settings-actions">
+                                        <button type="button" class="btn btn-secondary" id="btn-cancel-saturday-shift" style="display:none;">Cancel</button>
+                                        <button type="submit" class="btn btn-primary" id="btn-save-saturday-shift">Add Saturday Shift</button>
                                     </div>
                                 </form>
                             </div>
@@ -617,8 +648,8 @@
                         <!-- Shift Times Config Form -->
                         <div class="card glass-card">
                             <div class="card-header">
-                                <h3 class="card-title">Shift Management</h3>
-                                <p class="card-subtitle">Manage company shifts and late threshold calculations</p>
+                                <h3 class="card-title">Weekday Shift Management</h3>
+                                <p class="card-subtitle">Manage Mon–Fri shifts and late threshold calculations</p>
                             </div>
                             <div class="card-body">
                                 <div class="shifts-list-container" id="shifts-list">
@@ -676,7 +707,7 @@
     <div class="modal" id="employee-modal">
         <div class="modal-content glass-card">
             <div class="modal-header">
-                <h3>Assign Employee Shift</h3>
+                                <h3>Assign Employee Shifts</h3>
                 <button class="modal-close" id="btn-close-modal">&times;</button>
             </div>
             <div class="modal-body">
@@ -693,10 +724,17 @@
                         </select>
                     </div>
                     <div class="form-group">
-                        <label for="edit-emp-shift">Assigned Shift</label>
+                        <label for="edit-emp-shift">Weekday Shift (Mon–Fri)</label>
                         <select id="edit-emp-shift" class="form-control">
                             <!-- Populated dynamically -->
                         </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="edit-emp-saturday-shift">Saturday Shift (optional)</label>
+                        <select id="edit-emp-saturday-shift" class="form-control">
+                            <!-- Populated dynamically -->
+                        </select>
+                        <small class="form-help">Leave unassigned if this employee does not work on Saturdays.</small>
                     </div>
                     <div class="form-group toggle-container">
                         <label for="edit-emp-active">Account Status (Active)</label>
@@ -714,6 +752,6 @@
     </div>
 
     <!-- JS Logic -->
-    <script src="/js/app.js?v=20260730c"></script>
+    <script src="/js/app.js?v=20260803a"></script>
 </body>
 </html>

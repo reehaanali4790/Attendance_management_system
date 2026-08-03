@@ -270,6 +270,7 @@ def get_employees(
 ):
     query = db.query(models.Employee).options(
         joinedload(models.Employee.shift),
+        joinedload(models.Employee.saturday_shift),
         joinedload(models.Employee.department)
     )
     if department_id:
@@ -278,7 +279,12 @@ def get_employees(
 
 
 @router.put("/api/employees/{emp_id}", response_model=schemas.EmployeeResponse)
-def update_employee(emp_id: int, payload: schemas.EmployeeUpdate, db: Session = Depends(get_db)):
+def update_employee(
+    emp_id: int,
+    payload: schemas.EmployeeUpdate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     emp = db.query(models.Employee).filter_by(id=emp_id).first()
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
@@ -291,10 +297,21 @@ def update_employee(emp_id: int, payload: schemas.EmployeeUpdate, db: Session = 
         if payload.shift_id == 0:
             emp.shift_id = None
         else:
-            shift = db.query(models.Shift).filter_by(id=payload.shift_id).first()
+            shift = db.query(models.Shift).filter_by(id=payload.shift_id, is_saturday_shift=False).first()
             if not shift:
-                raise HTTPException(status_code=400, detail="Shift not found")
+                raise HTTPException(status_code=400, detail="Weekday shift not found")
             emp.shift_id = payload.shift_id
+    if payload.saturday_shift_id is not None:
+        if payload.saturday_shift_id == 0:
+            emp.saturday_shift_id = None
+        else:
+            saturday_shift = db.query(models.Shift).filter_by(
+                id=payload.saturday_shift_id,
+                is_saturday_shift=True,
+            ).first()
+            if not saturday_shift:
+                raise HTTPException(status_code=400, detail="Saturday shift not found")
+            emp.saturday_shift_id = payload.saturday_shift_id
     if payload.department_id is not None:
         if payload.department_id == 0:
             emp.department_id = None
@@ -308,8 +325,10 @@ def update_employee(emp_id: int, payload: schemas.EmployeeUpdate, db: Session = 
 
     updated = db.query(models.Employee).options(
         joinedload(models.Employee.shift),
+        joinedload(models.Employee.saturday_shift),
         joinedload(models.Employee.department),
     ).filter_by(id=emp_id).first()
+    background_tasks.add_task(schedule_recent_attendance_recalc)
     return updated
 
 
@@ -507,8 +526,16 @@ def delete_leave(leave_id: int, db: Session = Depends(get_db)):
 
 # --- Shifts ---
 @router.get("/api/shifts", response_model=List[schemas.ShiftResponse])
-def get_shifts(db: Session = Depends(get_db)):
-    return db.query(models.Shift).all()
+def get_shifts(
+    saturday: Optional[bool] = None,
+    db: Session = Depends(get_db),
+):
+    query = db.query(models.Shift)
+    if saturday is True:
+        query = query.filter(models.Shift.is_saturday_shift.is_(True))
+    elif saturday is False:
+        query = query.filter(models.Shift.is_saturday_shift.is_(False))
+    return query.order_by(models.Shift.name).all()
 
 
 @router.post("/api/shifts", response_model=schemas.ShiftResponse)
@@ -520,6 +547,11 @@ def create_shift(payload: schemas.ShiftCreate, db: Session = Depends(get_db)):
     db.add(shift)
     db.commit()
     db.refresh(shift)
+    if shift.is_saturday_shift:
+        schedule_attendance_recalc(
+            datetime.date.today().replace(day=1),
+            datetime.date.today(),
+        )
     return shift
 
 
@@ -564,10 +596,6 @@ def update_settings(payload: schemas.DeviceSettingsUpdate, db: Session = Depends
     )
     work_week_changed = (
         settings.saturday_is_working_day != payload.saturday_is_working_day
-        or settings.saturday_start_time != payload.saturday_start_time
-        or settings.saturday_end_time != payload.saturday_end_time
-        or settings.saturday_grace_period_minutes != payload.saturday_grace_period_minutes
-        or settings.saturday_late_after_minutes != payload.saturday_late_after_minutes
         or settings.sunday_is_working_day != payload.sunday_is_working_day
     )
 
